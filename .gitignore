@@ -37,6 +37,12 @@ TexOutput/
 !/Lecture*/ECE408_L*_CN.pdf
 !/Lecture*/assets/*.pdf
 
+# Original course slide decks are local-only
+/Lecture*/ece408-lecture*.pdf
+*.ppt
+*.pptx
+*.odp
+
 # Local scratch space, imported archives, and previous drafts
 /tmp/
 /Transcript/
