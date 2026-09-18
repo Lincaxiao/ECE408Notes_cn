@@ -1,0 +1,81 @@
+\section{常见错误、检查清单与公式表}
+
+\subsection{常见错误}
+
+\begin{longtable}{p{0.27\textwidth}p{0.65\textwidth}}
+\toprule
+\textbf{错误} & \textbf{后果与修正}\\
+\midrule
+\endhead
+把 \code{<<<B,T>>>} 的顺序记反 & 第一个参数是线程块数，第二个参数是每块线程数。\\
+\addlinespace
+写成 \code{ceil(n/T)}，但 $n,T$ 都是整数 & 整数除法先截断，\code{ceil} 已无作用。改用 \code{(n+T-1)/T} 或浮点除法后取整。\\
+\addlinespace
+遗漏 \code{if (i<n)} & 最后一个线程块中的额外线程可能越界访问。\\
+\addlinespace
+在主机端解引用设备指针 & 主机普通代码不应直接访问设备地址；通过 CUDA API 或核函数使用。\\
+\addlinespace
+不检查 CUDA 返回码 & 内存不足、非法配置或设备执行错误会被延迟发现，调试困难。\\
+\addlinespace
+直接用 CPU 计时包围核函数启动 & 异步启动导致测到的主要是提交开销。计时结束前必须同步，后续宜使用 CUDA 事件。\\
+\addlinespace
+假设线程块按编号顺序执行 & CUDA 可按任意顺序调度线程块；不同线程块应在没有全局同步的情况下保持独立。\\
+\addlinespace
+忘记释放设备内存 & 长时间运行或共享 GPU 环境中会造成资源泄漏与后续分配失败。\\
+\bottomrule
+\end{longtable}
+
+\subsection{写一维 CUDA 核函数前的检查清单}
+
+\begin{enumerate}
+  \item 明确一个线程负责的输出元素或数据片段；
+  \item 写出全局索引公式 $i=bT+t$；
+  \item 计算 $B=\lceil n/T\rceil$；
+  \item 对不整除情况加入边界检查；
+  \item 明确每个指针位于主机还是设备；
+  \item 检查分配、复制、启动、执行与释放的错误状态；
+  \item 不对不同线程块的执行先后作假设；
+  \item 验证结果后再讨论性能。
+\end{enumerate}
+
+\subsection{核心公式表}
+
+\begin{center}
+\begin{tabularx}{0.96\textwidth}{l X}
+\toprule
+\textbf{问题} & \textbf{公式}\\
+\midrule
+一维全局线程索引 & $i=\code{blockIdx.x}\cdot\code{blockDim.x}+\code{threadIdx.x}$\\
+需要的线程块数 & $B=\left\lceil n/T\right\rceil=\left\lfloor(n+T-1)/T\right\rfloor$\\
+实际启动线程数 & $N_{\mathrm{launch}}=BT$\\
+额外线程数 & $E=BT-n$，且 $0\le E<T$\\
+$k$ 元素/线程的逻辑线程数 & $L=\left\lceil n/k\right\rceil$\\
+$k$ 元素/线程的线程块数 & $B=\left\lceil L/T\right\rceil$\\
+$n$ 个 \code{float} 的字节数 & $S=n\cdot\code{sizeof(float)}$\\
+局部变量逻辑副本数 & 网格总线程数 $BT$\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{术语速查}
+
+\begin{center}
+\begin{tabularx}{0.96\textwidth}{l X}
+\toprule
+\textbf{中文术语} & \textbf{英文标准名称}\\
+\midrule
+数据并行 & data parallelism\\
+任务并行 & task parallelism\\
+线程 / 线程块 / 网格 & thread / thread block / grid\\
+核函数 / 核函数启动 & kernel / kernel launch\\
+单程序多数据 & Single Program Multiple Data (SPMD)\\
+主机 / 设备 & host / device\\
+主机内存 / 设备全局内存 & host memory / device global memory\\
+边界检查 & boundary check\\
+向上取整除法 & ceiling division\\
+异步调用 / 同步点 & asynchronous call / synchronization point\\
+函数限定符 & function qualifier\\
+即时编译 & just-in-time compilation (JIT compilation)\\
+\bottomrule
+\end{tabularx}
+\end{center}

@@ -1,0 +1,224 @@
+\section{Warp 访存与共享内存分块}
+\subsection{合并访存的判断单位}
+\subsubsection{固定一条访存指令，比较同一 warp 的地址}
+\term{合并访存}{memory coalescing}是把同一\term{线程束}{warp}内多个线程对相邻位置的访问组合起来服务。连续访问能够以较少的\term{内存事务}{memory transaction}传送所需数据；分散到不同位置的请求往往需要更多事务，也会增加 warp 等待数据的时间。这类分散访问也称为\term{内存分歧}{memory divergence}。
+
+判断时需要固定同一次访存，再观察 warp 内各线程的地址。例如，在矩阵乘法内积循环中固定 $k$，列出线程 $T_0,T_1,\ldots$ 此时分别访问哪里。一个线程随 $k$ 变化的访问顺序，与多个线程在固定 $k$ 时的地址分布，是两个不同的观察方向。
+
+\begin{keybox}[title={访存分析的三个要素}]
+线程块形状决定一个 warp 中哪些线程坐标相邻；地址表达式把线程坐标映射成元素下标；元素类型再把下标差换算成字节距离。确定这三项之后，才能判断同一 warp 的地址是连续、相同，还是带有步长。
+\end{keybox}
+
+\subsubsection{二维线程块如何组成 warp}
+对二维线程块，线程首先沿 $x$ 维连续排列，再进入下一条 $y$ 行。用 $B_x=\code{blockDim.x}$、$B_y=\code{blockDim.y}$ 表示块形状，用 $t_x,t_y$ 表示块内坐标，可将这个排列规则写为
+\begin{equation}
+  t=t_yB_x+t_x,\qquad
+  t_x=t\bmod B_x,\quad
+  t_y=\left\lfloor\frac{t}{B_x}\right\rfloor.
+  \label{l7:eq:thread-linear}
+\end{equation}
+式中 $t$ 为块内线性线程编号。每 32 个相邻线性线程构成一个 warp；用 $\ell=0,\ldots,31$ 表示 warp 内的\term{线程槽位}{lane}，某个完整 warp 的线程编号可写成 $t=32w+\ell$，其中 $w$ 为该 warp 在块内的编号。这是对给定排列规则的索引展开。
+
+因此，\code{dim3(32, 8)} 中的 warp 可以沿完整的一条 $x$ 行排列；\code{dim3(1, 32)} 的 warp 沿 $y$ 变化；\code{dim3(16, 16)} 的一个 warp 则由两条各含 16 个线程的 $x$ 行组成。
+
+\subsubsection{四种典型地址分布}
+下面的地址均为字节地址。连续访问中的每个线程读取一个 4 字节元素。
+
+\begin{table}[H]
+  \centering\small
+  \caption{同一次访存中，不同 lane 的地址关系。}
+  \begin{tabularx}{\linewidth}{@{}L{0.18\linewidth}L{0.34\linewidth}Y@{}}
+  \toprule
+  模式 & lane 0、1、2、3 等的地址 & 主要特征\\
+  \midrule
+  \makecell[l]{\textbf{连续合并}\\\textit{coalesced}} & $0,4,8,12,\ldots,124$ & 相邻线程请求相邻元素，形成连续的 128 字节需求。\\
+  \makecell[l]{\textbf{广播}\\\textit{broadcast}} & $40,40,40,40,\ldots$ & 多个线程请求同一数据，表现为同址复用。\\
+  \makecell[l]{\textbf{步长访问}\\\textit{strided}} & $0,16,32,48,\ldots$ & 每次只取相隔 16 字节的位置，地址间留有空隙。\\
+  \makecell[l]{\textbf{分散访问}\\\textit{scattered}} & $84,0,132,16,\ldots$ & 地址分散，需逐项检查其覆盖的传输区域。\\
+  \bottomrule
+  \end{tabularx}
+\end{table}
+
+广播可以满足多个线程对同一数据的需求；连续合并则让多个不同元素一起被有效传输。广播与连续合并对应不同的数据关系，分析复用收益时应分别处理。
+
+在简化模型中，一组连续访问可由一次 burst 或事务服务。更一般地，合并访存减少满足同一 warp 请求所需的事务数量；具体数量还取决于硬件事务粒度与地址对齐。
+\FloatBarrier
+
+\subsection{向量访问与行主序地址}
+\subsubsection{向量加法：每条指令内的地址都连续}
+对长度为 $n$ 的单精度向量，线程的全局下标为
+\begin{equation}
+  i=\code{blockIdx.x}\,\code{blockDim.x}+\code{threadIdx.x}.
+\end{equation}
+\par\noindent\begin{minipage}{\linewidth}
+核心运算为 $z[i]=x[i]+y[i]$，边界判断保证只有有效下标参与计算。
+
+\begin{lstlisting}[caption={向量加法：相邻线程处理相邻元素。}]
+__global__ void vectorAdd(const float* x, const float* y,
+                          float* z, unsigned int n) {
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        z[i] = x[i] + y[i];
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+
+设一个完整 warp 的第一个全局下标为 $i_0$，则对数组 $x$ 的读取地址为
+\begin{equation}
+  a_{x,\ell}=a_x+4(i_0+\ell),\qquad \ell=0,\ldots,31,
+\end{equation}
+其中 $a_x$ 是数组起始字节地址。相邻 lane 的地址差是 $4\Bunit$，整个 warp 需要 32 个 float，即 $128\Bunit$ 的连续数据。对 $y$ 的读取与对 $z$ 的写入也分别具有同样的关系。三组数组访问分别分析。
+
+\subsubsection{二维 C 数组按行线性存储}
+\term{行主序}{row-major order}把同一行的元素连续放入内存，再接下一行。设矩阵列数为 $W=\code{Width}$，行列下标分别为 $r,c$，则元素下标与字节地址为
+\begin{equation}
+  \operatorname{index}(r,c)=rW+c,
+  \qquad a(r,c)=a_0+s(rW+c),
+  \label{l7:eq:row-major}
+\end{equation}
+其中 $a_0$ 为矩阵起始地址，$s$ 为每个元素的字节数。固定 $r$ 而令 $c$ 增加 1，地址增加 $s$；固定 $c$ 而令 $r$ 增加 1，地址增加 $sW$。这是对行主序图的形式化。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.86\linewidth]{row_major.png}
+  \caption{四行矩阵依次线性存储。每一行以同一颜色表示，内存地址沿下方箭头增大。}
+  \label{l7:fig:row-major}
+\end{figure}
+
+矩阵乘法中的 \code{M[row*Width+k]} 沿单个线程的 $k$ 循环读取一行，\code{N[k*Width+col]} 沿单个线程的 $k$ 循环读取一列。是否合并还取决于同一 warp 内的 \code{row} 和 \code{col} 如何变化。
+\FloatBarrier
+
+\subsection{矩阵乘法：连续访问、广播与跨行步长}
+\subsubsection{固定输出元素与固定内积迭代}
+设 $M,N,P$ 均为 $W\times W$ 矩阵，$P=MN$，则
+\begin{equation}
+  P_{r,c}=\sum_{k=0}^{W-1}M_{r,k}N_{k,c}.
+\end{equation}
+\par\noindent\begin{minipage}{\linewidth}
+每个线程负责一个输出元素，\code{threadIdx.x} 影响输出列，\code{threadIdx.y} 影响输出行。下列片段在 kernel 内使用，$M,N$ 为输入指针，\code{Width} 为 $W$；假设该线程的行列坐标有效。
+
+\begin{lstlisting}[caption={矩阵乘法的内积访问，Width 表示矩阵维度。}]
+int row = blockDim.y * blockIdx.y + threadIdx.y;
+int col = blockDim.x * blockIdx.x + threadIdx.x;
+float sum = 0.0f;
+for (int k = 0; k < Width; ++k) {
+    sum += M[row * Width + k] * N[k * Width + col];
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\subsubsection{沿同一输出行排列的线程}
+考虑 \code{blockDim.x=32}，一个 warp 位于同一输出行 $r$，列下标为 $c_0+\ell$。固定 $k$ 后，两个输入的元素下标分别为
+\begin{align}
+  I_M(\ell)&=rW+k,\\
+  I_N(\ell)&=kW+c_0+\ell.
+\end{align}
+$I_M$ 与 $\ell$ 无关，32 个线程读取同一个 $M_{r,k}$，对应广播或复用；$I_N$ 随 $\ell$ 每次增加 1，线程读取相邻的 $N$ 元素，对应经典连续合并访问。
+
+沿着单个线程观察，$N$ 的读取会随着 $k$ 增加而跳到下一行；沿着同一次 $k$ 的 warp 观察，线程却一起读取 $N$ 的同一行。这解释了“单个线程纵向访问，但 warp 仍可合并”的现象。
+
+\subsubsection{跨输出行排列的线程}
+若所比较的线程具有 $r=r_0+\ell$，则固定 $k$ 时
+\begin{equation}
+  I_M(\ell)=(r_0+\ell)W+k,
+  \qquad I_M(\ell+1)-I_M(\ell)=W.
+\end{equation}
+相邻线程访问不同行的同一列，相差 $W$ 个元素。单精度数据的字节距离为 $4W$，这就是跨行步长访问。
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[b]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{matmul_N_pattern.png}
+    \caption{$N$：固定 $k$ 后，线程访问相邻列。}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.49\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{matmul_M_pattern.png}
+    \caption{$M$：固定 $k$ 后，所画线程跨不同的行。}
+  \end{subfigure}
+  \caption{两个访问方向示意。上方箭头描述单线程沿 $k$ 的移动，下方连线描述固定 $k$ 时线程之间的地址关系。}
+  \label{l7:fig:matmul-patterns}
+\end{figure}
+
+\paragraph{线程映射决定访问模式}
+跨输出行的线程读取 $M$ 时形成跨行步长；同一输出行中的线程则对 $M$ 广播。判断访存模式时，需要先明确所比较线程的坐标关系。
+
+\paragraph{块宽为 16 时的索引展开}
+一个 warp 包含两条输出行、每行 16 个线程。固定 $k$ 时，对 $M$ 的请求形成两组同址访问；对 $N$ 的请求则是同一组 16 个连续列各被访问两次。这可直接由式\eqref{l7:eq:thread-linear}和内积代码得到，进一步说明应按实际 warp 布局判断。
+\FloatBarrier
+
+\subsection{共享内存分块：协作加载与数据复用}
+\subsubsection{将数据搬运方式与计算访问方式分开}
+\term{共享内存分块}{shared-memory tiling}让一个线程块协作加载输入子块，再在共享内存中反复使用这些值。全局内存加载按便于合并的顺序分工，乘法运算则按内积所需的行列关系读取共享内存。
+
+设子块边长为 $T=\code{TILE_DIM}$，阶段编号为 $p$，块内线程坐标为 $t_x,t_y$。每个线程在阶段 $p$ 加载
+\begin{align}
+  M_s[t_y][t_x]&\leftarrow M[rW+pT+t_x],\\
+  N_s[t_y][t_x]&\leftarrow N[(pT+t_y)W+c].
+  \label{l7:eq:tile-load}
+\end{align}
+在同一条块内 $y$ 行上，$r$ 与 $t_y$ 固定，$t_x$ 连续变化，$c$ 也随 $t_x$ 连续变化，因此两个输入的加载地址都连续。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.73\linewidth]{matmul_tiling.png}
+  \caption{输入子块先复制到\term{暂存区}{scratchpad memory}，再使用暂存值执行乘法。蓝色区域表示分阶段加载的子块，橙色线表示内积所需的行列方向。}
+  \label{l7:fig:matmul-tiling}
+\end{figure}
+
+\subsubsection{完整计算阶段与同步位置}
+\par\noindent\begin{minipage}{\linewidth}
+方阵分块核函数依次执行协作加载、同步、计算和再次同步。$T$ 为编译期常量，\code{Width} 是 $T$ 的正整数倍；线程块为 $T\times T$，网格为 $(\code{Width}/T)\times(\code{Width}/T)$。这些约定使所有加载下标有效。
+
+\begin{lstlisting}[caption={包含协作加载、两次同步和输出写回的分块矩阵乘法。}]
+template<int T>
+__global__ void matmulTiled(const float* M, const float* N,
+                            float* P, int Width) {
+    __shared__ float M_s[T][T];
+    __shared__ float N_s[T][T];
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int row = blockIdx.y * T + ty;
+    int col = blockIdx.x * T + tx;
+    float sum = 0.0f;
+
+    for (int tile = 0; tile < Width / T; ++tile) {
+        M_s[ty][tx] = M[row * Width + tile * T + tx];
+        N_s[ty][tx] = N[(tile * T + ty) * Width + col];
+        __syncthreads();
+
+        for (int k = 0; k < T; ++k) {
+            sum += M_s[ty][k] * N_s[k][tx];
+        }
+        __syncthreads();
+    }
+    P[row * Width + col] = sum;
+}
+\end{lstlisting}
+\end{minipage}\par
+
+第一次同步确保两个输入子块已经由所有线程加载完成；第二次同步确保所有线程都用完当前子块，随后才允许下一阶段覆盖这两块共享内存。
+
+\subsubsection{合并收益与复用收益分别计算}
+\paragraph{加载顺序}
+在 $T=32$ 的示意下，warp 中的 $t_x=0,\ldots,31$，两个加载式分别请求 32 个连续元素。在简化事务模型中，这类连续加载可由一次事务服务。块宽变化后仍按实际 warp 布局分析，例如 $T=16$ 时每个 warp 包含两段各 16 个元素的行内加载。
+
+同一输出行直接读取 $M$ 时，整个 warp 取得一个共同元素；协作加载阶段则一次取得一段不同的 $M$ 元素，随后供块内重复使用。这样既提高传输中不同有效数据的利用程度，也保留后续的复用机会。
+
+\paragraph{源代码层面的读取次数}
+一个 $T\times T$ 输出子块在一个内积阶段需要 $T^3$ 次乘法。逐输出直接读取两项输入的写法，对应 $2T^3$ 次逻辑元素读取；协作加载两个 $T\times T$ 子块，则只在加载阶段执行 $2T^2$ 次全局元素读取。于是
+\begin{equation}
+  \frac{\text{逐输出读取次数}}{\text{协作加载次数}}
+  =\frac{2T^3}{2T^2}=T.
+\end{equation}
+这项计数用于解释复用机会：同一输入元素在块内参与多次乘法。广播和缓存会影响实际 DRAM 流量，所以该比值描述代码中的请求计数，不直接等于实际带宽或加速比。
+
+\paragraph{资源代价}
+代码中两个共享数组共占 $2T^2$ 个 float。按每个 float 为 4 字节，共享内存需求为
+\begin{equation}
+  S_{\mathrm{block}}=8T^2\Bunit.
+\end{equation}
+例如 $T=16$ 时为 $2{,}048\Bunit$，$T=32$ 时为 $8{,}192\Bunit$；对应线程数分别为 $256$ 与 $1{,}024$。这是由代码得到的资源计数。更大的子块增加复用机会，同时消耗更多每块资源，因而会与占用率产生权衡。
+\FloatBarrier

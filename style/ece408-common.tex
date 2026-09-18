@@ -1,0 +1,343 @@
+
+% ---------- 字体与数学排版 ----------
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\usepackage{mathtools}
+\usepackage{unicode-math}
+\setmainfont{STIXTwoText-Regular.otf}[
+  BoldFont=STIXTwoText-Bold.otf,
+  ItalicFont=STIXTwoText-Italic.otf,
+  BoldItalicFont=STIXTwoText-BoldItalic.otf
+]
+\setsansfont{STIXTwoText-Regular.otf}[
+  BoldFont=STIXTwoText-Bold.otf,
+  ItalicFont=STIXTwoText-Italic.otf,
+  BoldItalicFont=STIXTwoText-BoldItalic.otf
+]
+\setmonofont{NotoSansMono-Regular.ttf}[
+  BoldFont=NotoSansMono-Bold.ttf,
+  ItalicFont=NotoSansMono-Regular.ttf,
+  BoldItalicFont=NotoSansMono-Bold.ttf,
+  ItalicFeatures={FakeSlant=0.2},
+  BoldItalicFeatures={FakeSlant=0.2}
+]
+\setmathfont{STIXTwoMath-Regular.otf}
+\setCJKmainfont{FandolFang-Regular.otf}[
+  AutoFakeBold=2.1,
+  AutoFakeSlant=0.15
+]
+\setCJKsansfont{FandolFang-Regular.otf}[
+  AutoFakeBold=2.1,
+  AutoFakeSlant=0.15
+]
+\setCJKmonofont{FandolFang-Regular.otf}[
+  AutoFakeBold=2.0,
+  AutoFakeSlant=0.15
+]
+
+% ---------- 页面、图表与结构 ----------
+\usepackage[letterpaper,top=2.25cm,bottom=2.25cm,left=2.35cm,right=2.35cm,headheight=28pt]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{makecell}
+\usepackage{enumitem}
+\usepackage{siunitx}
+\usepackage[table]{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,matrix,backgrounds}
+\usepackage[most]{tcolorbox}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage{bookmark}
+\usepackage{url}
+\usepackage{lastpage}
+\usepackage{setspace}
+\usepackage{needspace}
+\usepackage{placeins}
+\usepackage{etoolbox}
+\usepackage{import}
+\raggedbottom
+\pretocmd{\section}{\Needspace{10\baselineskip}}{}{}
+\pretocmd{\subsection}{\Needspace{10\baselineskip}}{}{}
+\pretocmd{\subsubsection}{\Needspace{5\baselineskip}}{}{}
+
+% ---------- 颜色 ----------
+\definecolor{UIUCBlue}{HTML}{13294B}
+\definecolor{UIUCOrange}{HTML}{FF5F05}
+\definecolor{Ink}{HTML}{17202A}
+\definecolor{SoftBlue}{HTML}{EEF3F8}
+\definecolor{SoftOrange}{HTML}{FFF1E8}
+\definecolor{SoftGray}{HTML}{F4F5F6}
+\definecolor{DeepGreen}{HTML}{1B6B57}
+\definecolor{SoftGreen}{HTML}{EAF5F1}
+\definecolor{WarnRed}{HTML}{9B2C2C}
+\definecolor{SoftRed}{HTML}{FFF0F0}
+\definecolor{CodeBg}{HTML}{F7F7F8}
+\definecolor{CodeFrame}{HTML}{CBD2D9}
+\definecolor{CodeGray}{HTML}{57606A}
+\colorlet{UIUCNavy}{UIUCBlue}
+
+% ---------- 全局排版 ----------
+\setstretch{1.34}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.35em}
+\setlength{\emergencystretch}{2em}
+\setlist[itemize]{leftmargin=2.2em,itemsep=0.3em,topsep=0.35em}
+\setlist[enumerate]{leftmargin=2.35em,itemsep=0.35em,topsep=0.35em}
+\captionsetup{font=small,labelfont=bf,labelsep=quad,justification=centering}
+\sisetup{detect-all,group-separator={,},group-minimum-digits=4}
+\urlstyle{same}
+\setcounter{tocdepth}{2}
+\setcounter{secnumdepth}{3}
+
+% ---------- 标题 ----------
+\ctexset{
+  section={
+    format=\Large\bfseries\color{UIUCBlue},
+    beforeskip=1.2em,
+    afterskip=0.65em
+  },
+  subsection={
+    format=\large\bfseries\color{Ink},
+    beforeskip=1em,
+    afterskip=0.45em
+  },
+  subsubsection={
+    format=\normalsize\bfseries\color{black},
+    beforeskip=0.8em,
+    afterskip=0.35em
+  }
+}
+\titleformat{\section}
+  {\Large\bfseries\color{UIUCBlue}}
+  {\tikz[baseline=(n.base)]\node[fill=UIUCOrange,text=white,rounded corners=1.5pt,inner xsep=6pt,inner ysep=2pt] (n) {\thesection};}
+  {0.65em}{}
+
+% ---------- 页眉页脚与链接 ----------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small ECE 408}
+\newcommand{\NotesRunningTitle}[1]{\fancyhead[R]{\parbox[b]{0.78\textwidth}{\raggedleft\scriptsize#1}}}
+\NotesRunningTitle{\nouppercase{\leftmark}}
+\newif\ifNotesFrontmatter
+\newcommand{\NotesPageInfo}{第 \thepage\ 页\ifNotesFrontmatter\else，共 \pageref{LastPage}\ 页\fi}
+\fancyfoot[L]{\small Applied Parallel Programming}
+\fancyfoot[R]{\small\NotesPageInfo}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.2pt}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[L]{\small Applied Parallel Programming}\fancyfoot[R]{\small\NotesPageInfo}\renewcommand{\headrulewidth}{0pt}\renewcommand{\footrulewidth}{0.2pt}}
+\hypersetup{colorlinks=true,linkcolor=UIUCBlue,urlcolor=DeepGreen,citecolor=UIUCOrange,bookmarksopen=true,bookmarksopenlevel=1,bookmarksdepth=3}
+
+% ---------- 常用命令 ----------
+\newcommand{\term}[2]{\textbf{#1}\,(\textit{#2})}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\important}[1]{\textcolor{WarnRed}{\textbf{#1}}}
+\colorlet{Navy}{UIUCBlue}
+\colorlet{Orange}{UIUCOrange}
+\colorlet{Muted}{CodeGray}
+\colorlet{Pale}{SoftBlue}
+\colorlet{Rule}{CodeFrame}
+\colorlet{PaleBlue}{SoftBlue}
+\colorlet{RuleGray}{CodeFrame}
+\colorlet{UIUCblue}{UIUCBlue}
+\colorlet{UIUCorange}{UIUCOrange}
+\colorlet{InkGray}{CodeGray}
+\newcommand{\Bunit}{\,\mathrm{B}}
+\newcommand{\GBs}{\,\mathrm{GB/s}}
+\newcommand{\T}{T}
+
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+% ---------- 信息框 ----------
+\newtcolorbox{overviewbox}[1][]{
+  enhanced,breakable,
+  colback=SoftBlue,colframe=UIUCBlue,
+  boxrule=0.75pt,arc=2mm,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm,
+  title={内容概览},fonttitle=\bfseries,
+  #1
+}
+\newtcolorbox{definitionbox}[1][]{
+  enhanced,breakable,
+  colback=SoftBlue,colframe=UIUCBlue,
+  boxrule=0.75pt,arc=2mm,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm,
+  title={定义},fonttitle=\bfseries,
+  #1
+}
+\newtcolorbox{keybox}[1][]{
+  enhanced,breakable,
+  colback=SoftGreen,colframe=DeepGreen,
+  boxrule=0.7pt,arc=1.5mm,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm,
+  title={关键结论},fonttitle=\bfseries,
+  #1
+}
+\newtcolorbox{mechanismbox}[1][]{
+  enhanced,breakable,
+  colback=SoftGreen,colframe=DeepGreen,
+  boxrule=0.7pt,arc=1.5mm,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm,
+  title={机制},fonttitle=\bfseries,
+  #1
+}
+\newtcolorbox{warningbox}[1][]{
+  enhanced,breakable,
+  colback=SoftRed,colframe=WarnRed,
+  boxrule=0.7pt,arc=1.5mm,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm,
+  title={需要特别注意},fonttitle=\bfseries,
+  #1
+}
+\newtcolorbox{examplebox}[1][]{
+  enhanced,breakable,
+  colback=SoftOrange,colframe=UIUCOrange,
+  boxrule=0.7pt,arc=1.5mm,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm,
+  title={例题},fonttitle=\bfseries,
+  #1
+}
+\newtcolorbox{derivationbox}[1][]{
+  enhanced,breakable,
+  colback=SoftGray,colframe=gray!65,
+  boxrule=0.65pt,arc=1.5mm,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm,
+  title={推导补充},fonttitle=\bfseries,
+  #1
+}
+
+% ---------- CUDA 代码 ----------
+\lstdefinestyle{cuda}{
+  language=C++,
+  morekeywords={__global__,__device__,__host__,__shared__,__syncthreads,dim3,threadIdx,blockIdx,blockDim,gridDim,warpSize,cudaGetDeviceProperties,cudaDeviceProp,cudaError_t},
+  basicstyle=\ttfamily\small\linespread{1}\selectfont,
+  keywordstyle=\color{UIUCBlue}\bfseries,
+  commentstyle=\color{DeepGreen}\itshape,
+  stringstyle=\color{WarnRed},
+  numbers=left,
+  numberstyle=\scriptsize\color{gray},
+  numbersep=8pt,
+  frame=single,
+  rulecolor=\color{CodeFrame},
+  backgroundcolor=\color{CodeBg},
+  showstringspaces=false,
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  tabsize=4,
+  xleftmargin=1.2em,
+  framexleftmargin=0.7em
+}
+\lstset{style=cuda}
+\renewcommand{\lstlistingname}{代码}
+\renewcommand{\lstlistlistingname}{代码目录}
+
+
+% ---------- 兼容各讲的数学、图片与信息框 ----------
+\newcommand{\platform}[2]{#1\,(\textit{#2})}
+\newcommand{\vect}[1]{\boldsymbol{#1}}
+\newcommand{\ceildiv}[2]{\left\lceil\dfrac{#1}{#2}\right\rceil}
+\newcommand{\occupancy}{\mathcal{O}}
+\newtcolorbox{modelbox}[1][]{
+  enhanced,breakable,colback=SoftGray,colframe=gray!65,
+  boxrule=0.65pt,arc=1.5mm,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm,
+  title={建模说明},fonttitle=\bfseries,#1
+}
+% graphicspath 由入口设置；缺图直接报错，不生成占位框。
+\newcommand{\slidefig}[3]{%
+  \begin{figure}[H]\centering
+    \includegraphics[width=#1\textwidth]{#2}
+    \caption{#3}
+  \end{figure}
+}
+
+% ---------- 单讲与合订本共用的元数据 ----------
+\newcommand{\DeclareLecture}[3]{%
+  \ifcsdef{FirstLecture}{}{\gdef\FirstLecture{#1}}%
+  \gdef\LastLecture{#1}%
+  \expandafter\gdef\csname eceTitle#1\endcsname{#2}%
+  \expandafter\gdef\csname eceKeywords#1\endcsname{#3}%
+  \listgadd{\AllLectures}{#1}%
+}
+\newcommand{\LectureTitle}[1]{\csname eceTitle#1\endcsname}
+\newcommand{\LectureKeywords}[1]{\csname eceKeywords#1\endcsname}
+\newcommand{\LectureRange}{\FirstLecture--\LastLecture}
+\newcommand{\LectureCompatibility}[1]{%
+  % L1--3 的行内代码使用 LaTeX 转义字符；L4 起使用字面量。
+  \ifnum#1<4
+    \renewcommand{\code}[1]{\texttt{##1}}%
+  \else
+    \renewcommand{\code}[1]{\texttt{\detokenize{##1}}}%
+  \fi
+  \lstset{style=cuda}%
+}
+
+% ---------- 共用封面 ----------
+\newcommand{\NotesCover}[2]{%
+  \hypersetup{pageanchor=false}%
+  \begin{titlepage}
+    \thispagestyle{empty}
+    \begin{tikzpicture}[remember picture,overlay]
+      \ifstrempty{#1}{%
+        % 合订本以课程编号为唯一标题。
+        \fill[UIUCBlue] (current page.north west) rectangle ([yshift=-10cm]current page.north east);
+        \node[anchor=west,inner sep=0pt,text=white]
+          at ([xshift=2.6cm,yshift=-6.5cm]current page.north west)
+          {{\fontsize{56}{64}\selectfont\bfseries ECE 408}};
+        \fill[UIUCOrange] ([xshift=1.8cm,yshift=-10cm]current page.north west) rectangle ([xshift=2.15cm,yshift=-12.3cm]current page.north west);
+      }{%
+        % 单讲保留课程编号、讲次与技术标题。
+        \fill[UIUCBlue] (current page.north west) rectangle ([yshift=-4.2cm]current page.north east);
+        \node[anchor=west,inner sep=0pt,text=white]
+          at ([xshift=2.35cm,yshift=-2.4cm]current page.north west)
+          {{\fontsize{28}{34}\selectfont\bfseries ECE 408}};
+        \fill[UIUCOrange] ([xshift=1.8cm,yshift=-4.2cm]current page.north west) rectangle ([xshift=2.15cm,yshift=-6.5cm]current page.north west);
+      }
+      \draw[UIUCOrange,line width=2.2pt] ([xshift=1.8cm,yshift=2.0cm]current page.south west) -- ([xshift=-1.8cm,yshift=2.0cm]current page.south east);
+    \end{tikzpicture}
+    \ifstrempty{#1}{}{%
+      \vspace*{4.8cm}
+      \begin{flushleft}
+        \hspace*{1.25cm}\begin{minipage}{\dimexpr\linewidth-1.25cm\relax}
+          {\Huge\bfseries\color{UIUCBlue}#1\par}
+          \vspace{0.5cm}
+          {\raggedright\hyphenpenalty=10000\LARGE\bfseries\color{Ink}#2\par}
+        \end{minipage}
+      \end{flushleft}
+    }
+    \vfill
+  \end{titlepage}
+}
+\newcommand{\NotesContents}{%
+  \NotesFrontmattertrue
+  \begingroup
+    \small\setstretch{1.12}\setlength{\parskip}{0pt}
+    \tableofcontents
+  \endgroup
+  \clearpage
+  \NotesFrontmatterfalse
+}
+\newcommand{\StandaloneLecture}[1]{%
+  \LectureCompatibility{#1}%
+  \NotesRunningTitle{Lecture #1: \LectureTitle{#1}}%
+  \graphicspath{{assets/}}%
+  \hypersetup{pdftitle={ECE408 Lecture #1: \LectureTitle{#1}},pdfsubject={Applied Parallel Programming Lecture #1 Notes},pdfkeywords={\LectureKeywords{#1}}}%
+  \NotesCover{第#1讲}{\LectureTitle{#1}}%
+  \pagenumbering{roman}\hypersetup{pageanchor=true}%
+  \markboth{Lecture #1: \LectureTitle{#1}}{}%
+  \NotesContents
+  \pagenumbering{arabic}%
+  \input{content.tex}%
+}

@@ -1,0 +1,66 @@
+\section{核心内容}
+
+\begin{overviewbox}
+\begin{itemize}
+  \item 理解 CUDA 线程的多维逻辑组织；
+  \item 了解如何在核函数中使用循环等控制结构。
+\end{itemize}
+\end{overviewbox}
+
+\subsection{并行线程数组与单程序多数据模型}
+
+CUDA 核函数启动后，由一个线程网格执行。网格中的所有线程运行同一份核函数代码，但每个线程都能读取一组与自身位置有关的只读内建变量，从而确定自己负责的数据位置。该执行方式属于单程序多数据 (single-program, multiple-data, SPMD) 模型：
+\[
+  \text{同一程序} + \text{不同线程标识} \Longrightarrow \text{不同数据上的并行实例}.
+\]
+
+\begin{definitionbox}
+网格是一次核函数启动所创建的全部线程块的逻辑集合；线程块是能够使用块内共享机制进行协作的一组线程。因而，一次常规核函数启动形成两级层次：
+\[
+  \text{网格} \longrightarrow \text{线程块} \longrightarrow \text{线程}.
+\]
+每个网格内的线程块具有相同的块尺寸，每个线程块内的线程执行相同的核函数代码。
+\end{definitionbox}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  font=\small\sffamily,
+  box/.style={draw=UIUCNavy,thick,rounded corners=1.2mm,minimum height=1.05cm,align=center},
+  arr/.style={-{Stealth[length=3mm]},very thick,UIUCOrange}
+]
+  \node[box,fill=UIUCBlue!12,minimum width=2.3cm] (grid) {一次核函数启动\\一个网格};
+  \node[box,fill=green!10,minimum width=3.1cm,right=2.0cm of grid] (blocks) {三维线程块数组\\每个块具有唯一块坐标};
+  \node[box,fill=yellow!17,minimum width=3.1cm,right=2.0cm of blocks] (threads) {三维线程数组\\每个线程具有唯一块内坐标};
+  \draw[arr] (grid) -- node[above,text=UIUCNavy]{包含} (blocks);
+  \draw[arr] (blocks) -- node[above,text=UIUCNavy]{每块包含} (threads);
+  \node[below=7mm of blocks,text=CodeGray]
+  {未使用的维度尺寸取 1；所有线程执行同一核函数，并通过坐标选择不同数据。};
+\end{tikzpicture}
+\caption{CUDA 的逻辑执行层次}
+\end{figure}
+
+\subsection{块内协作与块间独立性}
+
+线程块既是逻辑索引单位，也是协作边界。块内线程可通过共享内存 (shared memory)、原子操作 (atomic operation) 和屏障同步 (barrier synchronization) 等机制协作。不同线程块不共享块内资源，通常主要通过全局内存 (global memory) 交换数据，因此块间协作更受限制。
+
+这一约束直接解释了线程块设计的两个基本原则：
+\begin{itemize}
+  \item 同一块内的线程应对应一组存在局部数据关系、未来可能需要协作的工作项；
+  \item 各线程块应尽量能够独立完成工作，使硬件可以按任意次序调度线程块。
+\end{itemize}
+
+\subsection{多维组织的目的}
+
+CUDA 将网格和线程块统一表示为至多三维的逻辑数组。即使应用只使用一维或二维，未使用的维度仍存在，其尺寸取为 1。多维组织的主要价值是让线程坐标直接对应数据坐标：
+\begin{itemize}
+  \item 一维向量通常使用全局下标 $i$；
+  \item 二维图像或矩阵通常使用行列坐标 $(r,c)$；
+  \item 三维体数据通常使用坐标 $(z,y,x)$ 或 $(d,r,c)$。
+\end{itemize}
+
+这种对应关系降低了地址计算的复杂度，也使边界判断与任务划分更清晰。多维网格并未改变存储器本身的一维线性地址空间；它提供的是更自然的\emph{逻辑坐标系}。逻辑坐标仍需在线程内部转换为线性内存偏移。
+
+\begin{keybox}
+多维线程组织解决的是“线程负责哪个逻辑数据元素”；行主序等数据布局解决的是“该逻辑元素位于线性内存的哪个位置”。二者需要连续完成：先求全局逻辑坐标，再求线性地址。
+\end{keybox}

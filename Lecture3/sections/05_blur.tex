@@ -1,0 +1,172 @@
+\section{实例二：邻域平均模糊}
+
+\subsection{从逐元素映射到邻域映射}
+
+灰度图像模糊仍采用“一个线程生成一个输出像素”的并行分解，但一个输出不再只依赖一个输入位置。设模糊半径为
+\[
+R=\texttt{BLUR\_SIZE}.
+\]
+输出像素 $(r,c)$ 的名义邻域为
+\[
+\mathcal{N}_{R}(r,c)
+=\bigl\{(i,j)\mid r-R\leq i\leq r+R,
+                    \ c-R\leq j\leq c+R\bigr\}.
+\]
+若该邻域完全位于图像内部，其中包含
+\[
+(2R+1)^2
+\]
+个输入像素。当 $R=1$ 时，内部像素使用 $3\times3$ 邻域，共 9 个输入。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.88\textwidth]{blur_neighborhood_p24.png}
+  \caption{一个线程负责一个输出像素，并读取该位置周围的多个输入像素。图中半径为 1。}
+\end{figure}
+
+设图像有效区域为
+\[
+\Omega=\{(i,j)\mid 0\leq i<H,\ 0\leq j<W\}.
+\]
+真正参与边界像素计算的集合是
+\[
+\mathcal{V}_{R}(r,c)=\mathcal{N}_{R}(r,c)\cap\Omega.
+\]
+因此输出应定义为有效邻域的平均值：
+\[
+\boxed{
+B_{r,c}
+=\frac{1}{\lvert\mathcal{V}_{R}(r,c)\rvert}
+ \sum_{(i,j)\in\mathcal{V}_{R}(r,c)} I_{i,j}
+}.
+\]
+
+\subsection{核函数中的双重循环}
+
+每个线程知道自己的输出坐标 $(\texttt{outRow},\texttt{outCol})$ 后，需要枚举邻域的所有候选输入坐标。二维邻域自然对应两层循环：外层改变输入行，内层改变输入列。
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={未处理输入边界的基本邻域遍历}]
+unsigned int sum = 0;
+
+for (int inRow = outRow - BLUR_SIZE;
+     inRow < outRow + BLUR_SIZE + 1;
+     ++inRow) {
+    for (int inCol = outCol - BLUR_SIZE;
+         inCol < outCol + BLUR_SIZE + 1;
+         ++inCol) {
+        sum += image[inRow * width + inCol];
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+
+该代码只对完全位于图像内部的输出像素安全。即使输出坐标本身有效，邻域中的 \texttt{inRow} 或 \texttt{inCol} 仍可能越界。例如，左上角输出 $(0,0)$ 在 $R=1$ 时会尝试访问行 $-1$ 或列 $-1$。
+
+\subsection{两层边界条件}
+
+模糊核函数中存在两类不同的内存访问，因而需要两层保护：
+\begin{enumerate}
+  \item \textbf{输出保护：}验证线程负责的输出坐标满足 $0\leq\texttt{outRow}<H$ 且 $0\leq\texttt{outCol}<W$，从而保证最终写入有效；
+  \item \textbf{输入保护：}对循环中每一个候选邻域坐标验证 $0\leq\texttt{inRow}<H$ 且 $0\leq\texttt{inCol}<W$，从而保证每次读取有效。
+\end{enumerate}
+
+内存访问规则可形式化为：
+\begin{warningbox}[title=每次内存访问都必须有对应的索引保护]
+对任意数组访问 \texttt{array[index]}，必须能够指出一条在该访问之前成立的条件，并由该条件推出 \texttt{index} 位于数组合法范围内。模糊核函数的输出写入由外层条件保护，输入读取由内层条件保护。
+\end{warningbox}
+
+邻域索引使用有符号整数 \texttt{int}。这样，顶边和左边附近的候选坐标可以自然取负值，并由 \texttt{inRow >= 0} 与 \texttt{inCol >= 0} 排除。若这些变量使用无符号类型，减去模糊半径可能发生下溢，使边界逻辑难以按预期工作。
+
+\subsection{固定分母为何会产生错误}
+
+只跳过越界输入还不够。若始终除以名义邻域大小 $(2R+1)^2$，边界处没有被加入求和的像素仍被隐含地计入分母，相当于把缺失像素按 0 处理，输出会偏小。
+
+当 $R=1$ 时：
+\begin{itemize}
+  \item 内部像素有 9 个有效邻居，分母为 9；
+  \item 非角点边缘像素通常有 6 个有效邻居，分母应为 6；
+  \item 角点像素有 4 个有效邻居，分母应为 4。
+\end{itemize}
+
+因此必须在累加有效像素时同步维护计数 \texttt{count}，最后使用 \texttt{sum / count}。
+
+\begin{examplebox}[title=角点像素的有效邻域]
+考虑 $3\times3$ 灰度块
+\[
+\begin{bmatrix}
+10&20&30\\
+40&50&60\\
+70&80&90
+\end{bmatrix}.
+\]
+当 $R=1$ 时，中心像素的九点平均为 50。左上角输出只使用
+\[
+10,\ 20,\ 40,\ 50,
+\]
+所以
+\[
+\texttt{sum}=120,\qquad \texttt{count}=4,
+\qquad B_{0,0}=120/4=30.
+\]
+若错误地除以 9，则得到 13，明显把边界亮度压低。
+\end{examplebox}
+
+\subsection{完整核函数}
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={对有效邻域求平均的完整灰度模糊核函数}]
+#define BLUR_SIZE 1
+
+__global__
+void blur_kernel(unsigned char* image,
+                 unsigned char* blurred,
+                 unsigned int width,
+                 unsigned int height)
+{
+    int outRow = blockIdx.y * blockDim.y + threadIdx.y;
+    int outCol = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (outRow < height && outCol < width) {
+        unsigned int sum = 0;
+        unsigned int count = 0;
+
+        for (int inRow = outRow - BLUR_SIZE;
+             inRow < outRow + BLUR_SIZE + 1;
+             ++inRow) {
+            for (int inCol = outCol - BLUR_SIZE;
+                 inCol < outCol + BLUR_SIZE + 1;
+                 ++inCol) {
+                if (inRow >= 0 && inRow < height &&
+                    inCol >= 0 && inCol < width) {
+                    sum += image[inRow * width + inCol];
+                    ++count;
+                }
+            }
+        }
+
+        blurred[outRow * width + outCol]
+            = (unsigned char)(sum / count);
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+
+对任何通过外层条件的线程，中心输入 $(\texttt{outRow},\texttt{outCol})$ 一定有效，因此 \texttt{count} 至少为 1，最终除法不会除以 0。
+
+\subsection{控制流与工作量}
+
+所有线程执行同一双重循环结构，但边界线程的内层条件只有部分迭代成立。对半径 $R$，每个有效输出线程检查 $(2R+1)^2$ 个候选位置；实际读取次数等于 $\lvert\mathcal{V}_{R}(r,c)\rvert$。这说明核函数内部可以包含普通控制结构：循环负责枚举一个线程的局部工作集，条件判断负责过滤无效位置。
+
+\begin{keybox}
+RGB 转灰度与模糊使用相同的输出并行分解，但单线程输入工作集不同：
+\[
+\begin{array}{c|c|c}
+\text{计算} & \text{每线程输出} & \text{每线程输入读取}\\
+\hline
+\text{RGB 转灰度} & 1\text{ 个灰度像素} & 3\text{ 个同位置通道值}\\
+\text{邻域模糊} & 1\text{ 个模糊像素} & \lvert\mathcal{V}_{R}(r,c)\rvert\text{ 个邻域像素}
+\end{array}
+\]
+线程数量由输出空间决定，单线程内部的循环由输入依赖范围决定。
+\end{keybox}

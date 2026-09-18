@@ -1,0 +1,117 @@
+\section{完整、可检查的向量加法程序}
+
+\par\noindent\begin{minipage}{\linewidth}
+以下完整示例把线程索引、内存管理、核函数启动、同步和错误检查串联起来。代码使用 CUDA\term{运行时 API}{CUDA Runtime API}，并用宏统一检查错误。
+
+\begin{lstlisting}[style=cuda]
+#include <cuda_runtime.h>
+
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
+
+#define CUDA_CHECK(call) \
+    do { \
+        cudaError_t err__ = (call); \
+        if (err__ != cudaSuccess) { \
+            std::fprintf(stderr, "CUDA error at %s:%d: %s\n", \
+            __FILE__, __LINE__, cudaGetErrorString(err__)); \
+            std::exit(EXIT_FAILURE); \
+        } \
+    } while (0)
+\end{lstlisting}
+\end{minipage}\par
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[style=cuda,firstnumber=18]
+__global__ void vecAddKernel(const float* A_d,
+                             const float* B_d,
+                             float* C_d,
+                             int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        C_d[i] = A_d[i] + B_d[i];
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[style=cuda,firstnumber=28]
+void vecAddGPU(const float* A_h, const float* B_h,
+               float* C_h, int n) {
+    if (n <= 0) {
+        return;
+    }
+
+    const size_t bytes = static_cast<size_t>(n) * sizeof(float);
+    float *A_d = nullptr, *B_d = nullptr, *C_d = nullptr;
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&A_d), bytes));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&B_d), bytes));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&C_d), bytes));
+
+    CUDA_CHECK(cudaMemcpy(A_d, A_h, bytes, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(B_d, B_h, bytes, cudaMemcpyHostToDevice));
+
+    constexpr int threadsPerBlock = 256;
+    const int numBlocks =
+        (n + threadsPerBlock - 1) / threadsPerBlock;
+
+    vecAddKernel<<<numBlocks, threadsPerBlock>>>(A_d, B_d, C_d, n);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    CUDA_CHECK(cudaMemcpy(C_h, C_d, bytes, cudaMemcpyDeviceToHost));
+
+    CUDA_CHECK(cudaFree(A_d));
+    CUDA_CHECK(cudaFree(B_d));
+    CUDA_CHECK(cudaFree(C_d));
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[style=cuda,firstnumber=59]
+int main() {
+    constexpr int n = 1 << 20;
+    std::vector<float> A(n), B(n), C(n);
+
+    for (int i = 0; i < n; ++i) {
+        A[i] = static_cast<float>(i);
+        B[i] = 2.0f * static_cast<float>(i);
+    }
+
+    vecAddGPU(A.data(), B.data(), C.data(), n);
+
+    for (int i = 0; i < n; ++i) {
+        const float expected = A[i] + B[i];
+        if (std::fabs(C[i] - expected) > 1.0e-5f) {
+            std::fprintf(stderr, "Mismatch at %d\n", i);
+            return EXIT_FAILURE;
+        }
+    }
+
+    std::printf("Vector addition passed for n=%d.\n", n);
+    return EXIT_SUCCESS;
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\subsection{程序结构}
+
+\begin{enumerate}
+  \item \code{main} 在主机端创建并初始化三个向量；
+  \item \code{vecAddGPU} 为三个向量分配设备内存；
+  \item 两次主机到设备复制把输入送入 GPU；
+  \item 启动配置根据 $n$ 自动计算线程块数；
+  \item 每个设备线程计算一个 $C[i]$，越界线程被条件屏蔽；
+  \item 主机等待核函数完成并检查错误；
+  \item 设备到主机复制取回结果，随后释放设备资源；
+  \item \code{main} 在 CPU 上验证每一个结果元素。
+\end{enumerate}
+
+\begin{keybox}[title={正确性与性能是两个层次}]
+本程序首先保证结果正确、资源被释放、错误能被报告。它仍会为每次函数调用重新分配内存并往返复制数据；对于包含多个 GPU 阶段的真实程序，通常应让数据在设备端保留更久，减少重复分配与传输。
+\end{keybox}

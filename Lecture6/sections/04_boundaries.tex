@@ -1,0 +1,220 @@
+\Needspace{9\baselineskip}
+\section{边界条件与一般尺寸矩阵}
+\label{l6:sec:boundaries}
+
+\subsection{从矩阵形状推导三类有效性条件}
+\subsubsection{一般矩阵尺寸与行宽}
+采用一般矩阵形状
+\begin{equation}
+ A\in\mathbb{R}^{M\times K},\qquad
+ B\in\mathbb{R}^{K\times N},\qquad
+ C\in\mathbb{R}^{M\times N}.
+ \label{l6:eq:rect-shape}
+\end{equation}
+其中 $M$ 是输出行数，$N$ 是输出列数，$K$ 是内积长度。方阵情形对应 $M=K=N$。线程映射仍为 $r=b_yT+t_y$、$c=b_xT+t_x$。
+
+$A$ 的行宽为 $K$，$B$ 和 $C$ 的行宽为 $N$。因此，一维数组偏移分别为
+\[
+ A_{r,j}\longleftrightarrow rK+j,\qquad
+ B_{j,c}\longleftrightarrow jN+c,\qquad
+ C_{r,c}\longleftrightarrow rN+c.
+\]
+各矩阵的行宽决定地址偏移；加载条件和输出条件需要分别使用相应矩阵的维度。
+
+\subsubsection{加载有效性与输出有效性分别判断}
+同一个线程在一轮中有三个独立的任务：加载一个 $A$ 元素、加载一个 $B$ 元素，以及更新自己的输出部分和。前两项是否对应有效输入，需要根据各自的输入坐标判断。
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}p{0.13\linewidth}p{0.27\linewidth}Y@{}}
+\toprule
+操作 & 目标位置 & 有效性条件 \\
+\midrule
+加载 $A$ & $A_{r,qT+t_x}$ & $r<M$ 且 $qT+t_x<K$。\\
+加载 $B$ & $B_{qT+t_y,c}$ & $qT+t_y<K$ 且 $c<N$。\\
+写回 $C$ & $C_{r,c}$ & $r<M$ 且 $c<N$。\\
+\bottomrule
+\end{tabularx}
+\end{center}
+所有下标由非负线程坐标生成，因此这里仅列上界条件。
+
+一个输出列越界的线程，仍可能负责加载同块其他线程需要的 $A$ 元素；一个输出行越界的线程，仍可能负责加载有效的 $B$ 元素。输出有效性只能决定是否写回当前输出，不能直接代替输入加载条件。
+
+\subsubsection{三种方向的分块数量}
+输出网格覆盖 $M\times N$，所以横纵方向的线程块数分别为
+\begin{equation}
+ n_x=\left\lceil\frac{N}{T}\right\rceil,\qquad
+ n_y=\left\lceil\frac{M}{T}\right\rceil.
+\end{equation}
+每个输出都需要遍历长度为 $K$ 的内积方向，因此每个线程块执行
+\begin{equation}
+ Q=\left\lceil\frac{K}{T}\right\rceil
+ \label{l6:eq:tile-count}
+\end{equation}
+轮输入加载。网格尺寸由输出矩阵决定，循环轮数由内积长度决定。
+
+对于正整数 $D$，整数向上取整可以写成
+\begin{equation}
+ \left\lceil\frac{D}{T}\right\rceil
+ =\left\lfloor\frac{D-1}{T}\right\rfloor+1.
+ \label{l6:eq:ceil}
+\end{equation}
+这对应 \code{(D - 1) / TILE_DIM + 1}。若 $D$ 为 $T$ 的倍数，减一使商减少一，再加一恢复；若存在余数，则在完整分块数上加一，覆盖最后的不完整分块。公式用于 $D>0$ 的情形。
+
+\subsection{零填充维持统一的计算循环}
+\subsubsection{缺失输入在加载时写零}
+\term{零填充}{zero padding} 在加载阶段处理边界：目标输入有效时正常加载，越界时向该线程负责的共享数组位置写入 $0$。随后，所有线程都可以执行相同的 $T$ 步内积循环。超出内积长度的项因乘以零而不产生贡献。
+
+每一轮都必须写入该共享位置，无论写入的是输入还是零。共享数组会在多轮之间复用；若越界分支仅跳过赋值，该位置可能保留上一轮的数据，使不应参与计算的项继续产生贡献。
+
+\begin{keybox}[title={零填充的三个动作}]
+加载 $A$：使用 $A$ 自身的边界条件，越界写零。\par
+加载 $B$：使用 $B$ 自身的边界条件，越界写零。\par
+写回 $C$：仅当输出坐标有效时写入全局内存。\par
+两个同步点仍由整个线程块共同执行。
+\end{keybox}
+
+\subsubsection{例一：输出有效，但最后一轮输入不完整}
+取 $M=K=N=3$、$T=2$。线程块 $(b_x,b_y)=(0,0)$ 负责左上角四个有效输出，共执行 $Q=2$ 轮。第二轮 $q=1$ 对应全局内积下标 $j=2,3$，其中 $j=3$ 超出有效输入范围。共享数组应为
+\begin{equation}
+ A_s=\begin{bmatrix}A_{0,2}&0\\A_{1,2}&0\end{bmatrix},
+ \qquad
+ B_s=\begin{bmatrix}B_{2,0}&B_{2,1}\\0&0\end{bmatrix}.
+ \label{l6:eq:boundary-shared}
+\end{equation}
+在 $k=0$ 时，四个线程分别增加 $A_{r,2}B_{2,c}$；在 $k=1$ 时，共享行的第二个元素与共享列的第二个元素均为零，贡献为零。以 $C_{0,1}$ 为例，全部两轮累加为
+\[
+ \underbrace{A_{0,0}B_{0,1}+A_{0,1}B_{1,1}}_{q=0}
+ +\underbrace{A_{0,2}B_{2,1}+0\cdot0}_{q=1}.
+\]
+这个线程的输出位置始终有效，但它仍需要对最后一轮输入进行边界处理。
+
+\begin{figure}[H]
+ \centering
+ \includegraphics[width=0.96\linewidth]{boundary_load_p37.png}
+ \caption{$3\times3$ 矩阵使用 $2\times2$ 分块时，第二轮输入块包含缺失位置。图中的线程编号采用（行，列）次序。}
+ \label{l6:fig:boundary-load}
+\end{figure}
+
+\subsubsection{例二：输出越界的线程仍承担加载任务}
+仍取 $3\times3$ 矩阵与 $2\times2$ 分块。线程块 $(b_x,b_y)=(1,1)$ 覆盖输出坐标 $r,c\in\{2,3\}$，只有 $C_{2,2}$ 有效。在第一轮 $q=0$，四个线程的任务如下；线程坐标均按 $(t_x,t_y)$ 书写。
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}p{0.13\linewidth}p{0.18\linewidth}p{0.24\linewidth}Y@{}}
+\toprule
+线程 & 输出位置 & 加载 $A$ & 加载 $B$ \\
+\midrule
+$(0,0)$ & $C_{2,2}$ 有效 & $A_{2,0}$ & $B_{0,2}$ \\
+$(1,0)$ & $C_{2,3}$ 越界 & $A_{2,1}$ & 越界，写零 \\
+$(0,1)$ & $C_{3,2}$ 越界 & 越界，写零 & $B_{1,2}$ \\
+$(1,1)$ & $C_{3,3}$ 越界 & 越界，写零 & 越界，写零 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+于是共享数组为
+\[
+ A_s=\begin{bmatrix}A_{2,0}&A_{2,1}\\0&0\end{bmatrix},
+ \qquad
+ B_s=\begin{bmatrix}B_{0,2}&0\\B_{1,2}&0\end{bmatrix}.
+\]
+唯一负责有效输出的线程 $(0,0)$，需要线程 $(1,0)$ 加载的 $A_{2,1}$ 和线程 $(0,1)$ 加载的 $B_{1,2}$，才能计算
+\[
+ A_{2,0}B_{0,2}+A_{2,1}B_{1,2}.
+\]
+第二轮再增加 $A_{2,2}B_{2,2}$，最终得到完整的 $C_{2,2}$。因此，应当保留输出越界线程的协作加载与同步，只在写回时排除其输出。
+
+\begin{figure}[H]
+ \centering
+ \includegraphics[width=0.84\linewidth]{boundary_output_p44.png}
+ \caption{右下角输出块只含一个有效输出，但该输出仍需要其他线程协作加载输入。}
+ \label{l6:fig:boundary-output}
+\end{figure}
+
+\Needspace{0.85\textheight}
+\subsection{支持一般尺寸的完整实现}
+\subsubsection{核函数与启动配置}
+\par\noindent\begin{minipage}{\linewidth}
+代码~\ref{l6:lst:rect} 把三类边界判断、零填充和向上取整组合起来。假设 $M,K,N$ 为正整数，矩阵使用行主序，输入和输出数组已经按式~\eqref{l6:eq:rect-shape} 分配。
+
+\begin{lstlisting}[caption={一般尺寸的分块矩阵乘法；加载与同步由全部线程参与。},label={l6:lst:rect}]
+#include <cuda_runtime.h>
+#define TILE_DIM 16
+
+__global__ void matmul_tiled(
+    const float* A, const float* B, float* C,
+    int M, int K, int N)
+{
+    __shared__ float A_s[TILE_DIM][TILE_DIM];
+    __shared__ float B_s[TILE_DIM][TILE_DIM];
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int row = blockIdx.y * TILE_DIM + ty;
+    const int col = blockIdx.x * TILE_DIM + tx;
+    const int numTiles = (K - 1) / TILE_DIM + 1;
+    float sum = 0.0f;
+
+    for (int q = 0; q < numTiles; ++q) {
+        const int aCol = q * TILE_DIM + tx;
+        const int bRow = q * TILE_DIM + ty;
+        A_s[ty][tx] = (row < M && aCol < K)
+            ? A[row * K + aCol] : 0.0f;
+        B_s[ty][tx] = (bRow < K && col < N)
+            ? B[bRow * N + col] : 0.0f;
+        __syncthreads();
+
+        for (int k = 0; k < TILE_DIM; ++k) {
+            sum += A_s[ty][k] * B_s[k][tx];
+        }
+        __syncthreads();
+    }
+    if (row < M && col < N) {
+        C[row * N + col] = sum;
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\par\noindent\begin{minipage}{\linewidth}
+启动时，网格横向覆盖 $N$ 列，纵向覆盖 $M$ 行：
+
+\begin{lstlisting}[numbers=none]
+dim3 block(TILE_DIM, TILE_DIM);
+dim3 grid((N - 1) / TILE_DIM + 1,
+          (M - 1) / TILE_DIM + 1);
+matmul_tiled<<<grid, block>>>(d_A, d_B, d_C, M, K, N);
+\end{lstlisting}
+\end{minipage}\par
+参数顺序为 $M,K,N$，与 $A$ 的行数、内积长度、$B$ 的列数一致。
+
+\subsubsection{为什么零填充保持结果正确}
+对输入在原矩阵范围外定义零扩展 $\widetilde A$、$\widetilde B$。当 $0\le r<M$、$0\le c<N$ 时，代码实际计算
+\begin{align}
+ \sum_{q=0}^{Q-1}\sum_{k=0}^{T-1}
+ \widetilde A_{r,qT+k}\widetilde B_{qT+k,c}
+ &=\sum_{j=0}^{QT-1}\widetilde A_{r,j}\widetilde B_{j,c}\\
+ &=\sum_{j=0}^{K-1}A_{r,j}B_{j,c}=C_{r,c}.
+\end{align}
+由于 $QT\ge K$，有效内积项全部被覆盖；多出来的项恰好为零。此推导解释了为何内积循环仍可固定执行 $T$ 步。零扩展只是在共享加载阶段实现的逻辑含义，无需为完整矩阵额外分配补零后的全局数组。
+
+\subsubsection{可选的计算判断与同步位置}
+对于无有效输出的线程，零填充使其相应共享行或共享列为零，部分和不影响任何有效输出。可以继续执行内积循环，也可以仅让有效输出线程执行乘加，以减少这些线程的无用运算。该调整的实际性能收益取决于分支和省去运算的开销。
+
+\par\noindent\begin{minipage}{\linewidth}
+若增加计算条件，正确的局部结构如下：
+
+\begin{lstlisting}[numbers=none]
+__syncthreads();
+if (row < M && col < N) {
+    for (int k = 0; k < TILE_DIM; ++k) {
+        sum += A_s[ty][k] * B_s[k][tx];
+    }
+}
+__syncthreads();
+\end{lstlisting}
+\end{minipage}\par
+两个同步点都在按线程变化的条件之外。将输出越界线程提前移出分块循环，会丢失它们仍可能承担的输入加载任务；将同步放入仅部分线程执行的分支，也不满足块内同步要求。
+
+\subsubsection{边界分支的工作量范围}
+边界条件可能造成\term{分支分歧}{branch divergence}。输出的末行、末列分块会包含输出越界线程；当 $K$ 不能被 $T$ 整除时，每个输出块的最后一轮也会处理内积方向的缺失输入。这一分类由三类边界谓词直接得到。
+
+在矩阵各维度相对 $T$ 都很大时，边缘区域和最后一轮输入只占较小比例；小矩阵或高度不规则的尺寸则可能有明显边界开销。该判断延续大矩阵边界影响较小的定性分析，具体占比仍由 $M,N,K,T$ 决定。
+\FloatBarrier

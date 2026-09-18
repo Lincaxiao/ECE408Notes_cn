@@ -1,0 +1,117 @@
+\Needspace{8\baselineskip}
+\section{卷积的计算结构与边界处理}
+\label{l8:sec:convolution}
+\subsection{邻域加权和与滤波器方向}
+一个输出元素由其附近输入元素的加权和得到。权重数组称为\term{卷积掩模}{convolution mask}或\term{滤波器}{filter}，通常也称卷积核；为避免与 CUDA 核函数混淆，以下用“滤波器”指权重数组，用“核函数”指设备端并行程序。同一个滤波器通常用于整个输入数组。相邻位置使用不同的输入窗口，但使用同一组权重，因此改变滤波器就能改变对局部信号的处理方式。
+
+连续函数与离散序列的数学卷积分别写为
+\begin{equation}
+ (f*g)(x)=\int_{-\infty}^{\infty} f(\tau)g(x-\tau)\,\mathrm d\tau,
+ \qquad
+ (f*g)[x]=\sum_{k=-\infty}^{\infty} f[k]g[x-k].
+\end{equation}
+其中 $x$ 指定输出位置，$\tau$ 或 $k$ 遍历参与计算的输入位置。表达式中的 $x-\tau$、$x-k$ 对应其中一个函数或序列的翻转与平移。
+
+\term{互相关}{cross-correlation}采用不翻转滤波器的滑动匹配。对实值函数，可写为 $(f\star g)(t)=\int f(\tau)g(t+\tau)\,\mathrm d\tau$。卷积常用于物理系统与滤波，互相关常用于模式匹配与机器学习。CNN 中通常计算互相关，但历史上仍沿用“卷积”的名称；当权重通过训练获得时，是否预先规定翻转可通过学习到的权重方向吸收。
+
+后续数组与 CUDA 示例采用\textbf{滤波器按原顺序读取}的约定。这个约定直接决定代码中使用 \code{M[j]}，也便于对应每一个乘加项。给定一组非对称权重时，翻转与不翻转通常会得到不同结果；下面一维示例的权重是对称的，因此该示例的数值无法单独区分这两种方向。
+
+\subsection{一维窗口、中心与零填充}
+输入数组记为 $N$，输出数组记为 $P$，长度均为 $W$；滤波器记为 $M$，宽度为 $K$。代码使用 \mbox{\code{Width}}、\mbox{\code{Mask_Width}} 表示这两个宽度。取奇数 $K=2r+1$，则半径 $r=(K-1)/2$ 表示输出中心左右各涉及多少个输入元素；代码中的整数除法 \code{Mask_Width / 2} 在这个条件下等于 $r$。
+
+为形式化说明边界判断，定义零延拓输入 $\widetilde N[q]$：有效下标 $0\le q<W$ 时等于 $N[q]$，其他位置等于零。按滤波器原顺序读取，一个输出为
+\begin{equation}
+\boxed{\quad P[i]=\sum_{j=0}^{K-1}\widetilde N[i-r+j]M[j],\qquad 0\le i<W.\quad}
+\label{l8:eq:1d}
+\end{equation}
+这个表达式把三个下标作用分开：$i$ 决定输出位置，$j$ 决定滤波器内的位置，$i-r+j$ 决定当前乘加读取哪个输入。$j=0$ 对应窗口最左端，$j=r$ 对应输入中心 $N[i]$，$j=K-1$ 对应最右端。
+
+以 $N=[1,2,3,4,5,6,7]$、$M=[3,4,5,4,3]$ 为例，$K=5$、$r=2$。计算 $P[2]$ 时读取 $N[0]$ 到 $N[4]$，而计算 $P[3]$ 时整个窗口向右移动一格：
+\begin{align}
+P[2]&=1\cdot3+2\cdot4+3\cdot5+4\cdot4+5\cdot3=57,\notag\\
+P[3]&=2\cdot3+3\cdot4+4\cdot5+5\cdot4+6\cdot3=76.
+\label{l8:eq:1dexample}
+\end{align}
+每一个输出都需要五次乘加，但这两个窗口共同使用了 $N[1]$ 到 $N[4]$。这种重叠正是后续共享内存分块的依据。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=.92\textwidth]{conv1d_p2}
+\caption{一维窗口与滤波器逐项相乘，再归约到输出 $P[2]=57$。}
+\end{figure}
+
+当窗口跨出数组边界时，会出现没有对应实际数组元素的位置，称为\term{幽灵元素}{ghost elements}。边界规则可以采用零填充，也可以复制边缘值；本讲代码采用零填充。输出 $P[1]$ 的输入窗口为 $[0,1,2,3,4]$，因此 $P[1]=0\cdot3+1\cdot4+2\cdot5+3\cdot4+4\cdot3=38$。
+
+零填充可以通过条件判断实现：遇到无效输入下标就跳过乘加。由于该项应为零，跳过与显式读取一个零具有相同的数学作用，因此无须为基本核函数实际分配数组外的元素。按式\eqref{l8:eq:1d}复算全部位置，可得到 $P=[22,38,57,76,95,90,74]$，可作为边界实现的参考结果。
+
+\subsection{二维邻域与图像平滑}
+二维计算将一维窗口扩展为一个矩形邻域。设输入有 $H$ 行、$W$ 列，滤波器为 $K\times K$，两个方向的半径均为 $r$。在与一维相同的读取约定下，零延拓输入为 $\widetilde N$，输出行列为 $(y,x)$，则
+\begin{equation}
+ P[y,x]=\sum_{u=0}^{K-1}\sum_{v=0}^{K-1}
+ \widetilde N[y-r+u,x-r+v]M[u,v].
+\label{l8:eq:2d}
+\end{equation}
+两个求和分别遍历滤波器的行与列；每个输出将整个局部窗口压缩为一个数，输入窗口与滤波器先逐项相乘，再将全部乘积相加。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=.78\textwidth]{conv2d_interior}
+\caption{$5\times5$ 输入邻域与权重逐项相乘，得到二维内部输出 $P[2,2]=321$。}
+\end{figure}
+
+在图中的零起始坐标下，中心为 $(2,2)$，使用输入的前五行、前五列。乘积矩阵各行之和依次为 $27,56,95,84,59$，合计 $321$。在边界例中，输出 $(1,0)$ 的窗口跨过上边界和左边界，填零后五行乘积之和为 $0,16,34,34,28$，合计 $112$。这些行和来自图中数值，可用于把二维索引与实际求和对应起来。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=.76\textwidth]{conv2d_boundary}
+\caption{二维零填充：窗口上侧与左侧的无效位置取零，得到边界输出 $112$。}
+\end{figure}
+
+幽灵单元也称 apron cells 或 halo cells。例如，另一个零填充边界窗口的五行分别为 $[0,0,0,0,0]$、$[0,3,4,5,6]$、$[0,2,3,4,5]$、$[0,3,5,6,7]$、$[0,1,1,3,1]$。使用图中相同的整数权重，五行乘积之和依次为 $0,52,54,61,12$，输出为 $179$。这些名称都与邻域的外围数据有关；进入分块实现后，需要进一步区分“落在全局数组外的补零位置”与“仍在全局数组内、但落在当前块核心区外的邻域元素”。后一类是真实输入，后续分块必须读取其值。
+
+一个具体的图像滤波器为
+\begin{equation}
+M=\frac1{273}
+\begin{bmatrix}
+1&4&7&4&1\\
+4&16&26&16&4\\
+7&26&41&26&7\\
+4&16&26&16&4\\
+1&4&7&4&1
+\end{bmatrix}.
+\label{l8:eq:smoothing}
+\end{equation}
+
+\textbf{平滑作用与边界条件。}所有系数非负，矩阵元素之和为 $17+66+107+66+17=273$，归一化后权重和为 $1$。每个输出是附近像素的加权平均，中心像素的权重较大、远处像素的权重较小，因此它起到平滑、模糊局部变化的作用。若整个窗口内的像素都等于常数 $c$，则输出仍为 $c$。采用零填充时，图像边缘窗口含有零，因而这一“保持常数”结论限于完整有效窗口；边界值可能被拉低。
+
+\subsection{直接 CUDA 实现：一个线程计算一个输出}
+输出之间只共享输入读取，没有相互依赖的输出写入，所以可让每个线程独立计算一个 $P[i]$。一维网格中的全局下标为 $i=\code{blockIdx.x}\,\code{blockDim.x}+\code{threadIdx.x}$。最后一个线程块可能超过数组长度，因此先检查输出下标，再在循环中检查输入下标。
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={直接一维卷积：每个线程计算一个输出，越界输入按零处理。},label={l8:lst:basic}]
+__global__ void convolution_1D_basic_kernel(
+    const float* N, const float* M, float* P,
+    int Mask_Width, int Width)
+{
+    int i = int(blockIdx.x) * int(blockDim.x)
+          + int(threadIdx.x);
+    if (i >= Width) return;
+    float Pvalue = 0.0f;
+    int N_start_point = i - Mask_Width / 2;
+    for (int j = 0; j < Mask_Width; ++j) {
+        int q = N_start_point + j;
+        if (q >= 0 && q < Width) {
+            Pvalue += N[q] * M[j];
+        }
+    }
+    P[i] = Pvalue;
+}
+\end{lstlisting}
+\end{minipage}\par
+
+两个范围检查各自保护不同的数组：入口处的 \code{i >= Width} 保护输出 $P$，循环内的检查保护输入 $N$。即使 $i$ 合法，$i-r+j$ 仍可能越界，因此两者都需要。局部标量 \mbox{\code{Pvalue}} 是每个线程自己的累加器；每个有效线程恰好写一个输出。
+
+\textbf{实现说明。}代码将只读输入写为 \code{const float*}，并显式把 CUDA 索引转为有符号整数，便于表达减去半径后可能出现的负值。直接版没有共享内存协作，因此无效输出线程可在入口直接返回。分块版的线程还承担输入搬运任务，返回位置需要与这些任务一起分析。
+
+假设每块 $B$ 个线程且 $W>0$，网格块数取 $\lceil W/B\rceil$。在整数代码中可以写作 \code{1 + (Width - 1) / B}。随后，每个线程沿着滤波器执行顺序乘加，线程之间沿输出坐标并行；这同时解释了计算并行性和输入访问的重叠。
+\FloatBarrier

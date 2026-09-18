@@ -1,0 +1,40 @@
+\documentclass[UTF8,fontset=none,zihao=-4,oneside,openany]{ctexbook}
+\input{style/ece408-common.tex}
+\input{lectures.tex}
+
+% 总目录列出讲次和主题；PDF 书签保留更细的标题层级。
+\setcounter{tocdepth}{1}
+\hypersetup{
+  pdftitle={ECE408: Applied Parallel Programming},
+  pdfsubject={Chinese lecture notes, Lectures \LectureRange},
+  pdfkeywords={ECE408, CUDA, GPU, parallel programming, lecture notes}
+}
+\ctexset{chapter={name={第,讲},number=\arabic{chapter}}}
+\titleformat{\chapter}[display]
+  {\raggedright\bfseries\color{UIUCBlue}}
+  {\Large\color{UIUCOrange}第\thechapter 讲}
+  {0.5em}{\LARGE}
+\titlespacing*{\chapter}{0pt}{0pt}{1.8em}
+\renewcommand{\chaptermark}[1]{\markboth{Lecture \thechapter: #1}{}}
+\renewcommand{\sectionmark}[1]{}
+\newcommand{\BookLecture}[1]{%
+  \clearpage
+  \begingroup
+    \LectureCompatibility{#1}%
+    \graphicspath{{Lecture#1/assets/}{Lecture#1/}}%
+    \chapter{\LectureTitle{#1}}%
+    \label{lecture:#1}%
+    \import{Lecture#1/}{content.tex}%
+    \clearpage
+  \endgroup
+}
+
+\begin{document}
+\NotesCover{}{}
+\frontmatter
+\hypersetup{pageanchor=true}
+\markboth{目录}{}
+\NotesContents
+\mainmatter
+\forlistloop{\BookLecture}{\AllLectures}
+\end{document}

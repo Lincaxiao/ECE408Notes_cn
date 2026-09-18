@@ -1,0 +1,167 @@
+\section{多维执行层次与索引系统}
+
+\subsection{四组只读内建变量}
+
+每个正在执行的线程都可读取四组 CUDA 只读内建变量。它们共同给出“网格有多大、当前块在哪里、块有多大、当前线程在块内哪里”。
+
+\begin{table}[H]
+\centering
+\caption{多维线程组织中的四组内建变量}
+\begin{tabularx}{\textwidth}{>{\ttfamily}l >{\raggedright\arraybackslash}p{0.25\textwidth} X}
+\toprule
+变量 & 含义 & 三个分量及取值范围 \\
+\midrule
+\normalfont\texttt{gridDim} & 网格在各方向上的线程块数量 & \texttt{x}、\texttt{y}、\texttt{z}；每个分量都是相应方向上的块数 \\
+\normalfont\texttt{blockIdx} & 当前线程块在网格中的坐标 & $0\leq\texttt{blockIdx.d}<\texttt{gridDim.d}$，其中 $d\in\{x,y,z\}$ \\
+\normalfont\texttt{blockDim} & 每个线程块在各方向上的线程数量 & \texttt{x}、\texttt{y}、\texttt{z}；三者乘积为每块线程总数 \\
+\normalfont\texttt{threadIdx} & 当前线程在线程块内部的坐标 & $0\leq\texttt{threadIdx.d}<\texttt{blockDim.d}$，其中 $d\in\{x,y,z\}$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+其中，\texttt{gridDim} 与 \texttt{blockDim} 描述尺寸，\texttt{blockIdx} 与 \texttt{threadIdx} 描述位置。对一维配置，未使用的 $y,z$ 维尺寸为 1，对应索引只能取 0；对二维配置，未使用的 $z$ 维尺寸为 1。
+
+\begin{examplebox}[title=三维尺寸示例]
+若
+\[
+\texttt{gridDim}=(8,3,2),\qquad \texttt{blockDim}=(5,4,3),
+\]
+则网格含有
+\[
+8\times 3\times 2=48
+\]
+个线程块，每块含有
+\[
+5\times 4\times 3=60
+\]
+个线程，总启动线程数为
+\[
+48\times 60=2880.
+\]
+块坐标的最大值为 $(7,2,1)$，块内线程坐标的最大值为 $(4,3,2)$。
+\end{examplebox}
+
+\subsection{一维全局索引}
+
+仅使用线程的块内下标 \texttt{threadIdx.x} 无法唯一标识整个网格中的线程，因为不同块内可以存在相同的块内下标。设每块包含 $B_x=\texttt{blockDim.x}$ 个线程，当前块编号为 $b_x=\texttt{blockIdx.x}$，当前线程在块内的编号为 $t_x=\texttt{threadIdx.x}$。当前块之前共有 $b_x$ 个完整线程块，因此它们共覆盖 $b_xB_x$ 个工作项；再加上块内偏移 $t_x$，得到一维全局工作下标
+\[
+  i=b_xB_x+t_x.
+\]
+对应的 CUDA 表达式为
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={一维全局工作下标}]
+unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+\end{lstlisting}
+\end{minipage}\par
+
+若网格在 $x$ 方向有 $G_x=\texttt{gridDim.x}$ 个块，则启动线程覆盖的全局下标范围为
+\[
+0\leq i<G_xB_x.
+\]
+数据长度通常并不恰好等于 $G_xB_x$，因此实际内存访问仍需检查 $i$ 是否小于数据长度。
+
+\subsection{二维全局坐标}
+
+二维数据通常用行列坐标 $(r,c)$ 表示。CUDA 习惯让 $x$ 方向对应列，让 $y$ 方向对应行。设
+\[
+\begin{aligned}
+ b_x&=\texttt{blockIdx.x}, & B_x&=\texttt{blockDim.x}, & t_x&=\texttt{threadIdx.x},\\
+ b_y&=\texttt{blockIdx.y}, & B_y&=\texttt{blockDim.y}, & t_y&=\texttt{threadIdx.y}.
+\end{aligned}
+\]
+则线程负责的全局行列坐标为
+\[
+\boxed{
+  r=b_yB_y+t_y,\qquad c=b_xB_x+t_x
+}
+\]
+即
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={二维线程坐标到全局数据坐标的映射}]
+unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
+unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
+\end{lstlisting}
+\end{minipage}\par
+
+这两个式子彼此独立：$x$ 方向只决定列坐标，$y$ 方向只决定行坐标。其几何意义与一维情形相同，都是“前面完整块的跨度加上块内偏移”。
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=0.72cm,y=0.72cm,font=\small\sffamily]
+  % 2x2 blocks, each block 4x3 threads; row direction points downward.
+  \fill[green!9] (4,-3) rectangle (8,-6);
+  \fill[UIUCOrange!45] (6,-4) rectangle (7,-5);
+  \draw[step=1,black!55,thin] (0,0) grid (8,-6);
+  \draw[UIUCBlue,very thick] (0,0) rectangle (8,-6);
+  \draw[UIUCBlue,very thick] (4,0)--(4,-6);
+  \draw[UIUCBlue,very thick] (0,-3)--(8,-3);
+  \node[above] at (4,0.22) {$x$ 方向：列};
+  \node[rotate=90,left] at (-0.2,-3) {$y$ 方向：行};
+  \node[text=green!45!black] at (6,-5.55) {块 $(1,1)$};
+  \node[text=WarnRed,anchor=west] at (8.35,-4.5) {块内线程 $(2,1)$};
+  \draw[-{Stealth[length=2.6mm]},WarnRed,thick] (8.25,-4.5)--(7.05,-4.5);
+  \node[align=left,anchor=west,text=UIUCNavy] at (9.0,-2.0)
+  {$c=1\times4+2=6$\\[1mm]$r=1\times3+1=4$};
+\end{tikzpicture}
+\caption{二维索引示例：块尺寸为 $4\times3$，高亮线程的全局坐标为 $(r,c)=(4,6)$}
+\end{figure}
+
+\begin{keybox}
+在二维图像或矩阵核函数中，最常见的坐标约定是
+\[
+\texttt{x}\leftrightarrow\text{列},\qquad
+\texttt{y}\leftrightarrow\text{行}.
+\]
+因此，宽度与 $x$ 方向相关，高度与 $y$ 方向相关。将二者交换会导致转置式访问、错误边界判断或越界。
+\end{keybox}
+
+\subsection{三维全局坐标}
+
+对体数据或三维张量，可逐维应用同一构造。若把 $z$ 方向解释为深度，则
+\[
+\begin{aligned}
+ c &= \texttt{blockIdx.x}\,\texttt{blockDim.x}+\texttt{threadIdx.x},\\
+ r &= \texttt{blockIdx.y}\,\texttt{blockDim.y}+\texttt{threadIdx.y},\\
+ d &= \texttt{blockIdx.z}\,\texttt{blockDim.z}+\texttt{threadIdx.z}.
+\end{aligned}
+\]
+每个线程因此对应一个逻辑体素 $(d,r,c)$。各维度的计算互不干扰，边界条件也应逐维检查。
+
+\subsection{块数、每块线程数与总线程数}
+
+记网格尺寸为
+\[
+(G_x,G_y,G_z)
+=(\texttt{gridDim.x},\texttt{gridDim.y},\texttt{gridDim.z}),
+\]
+块尺寸为
+\[
+(B_x,B_y,B_z)
+=(\texttt{blockDim.x},\texttt{blockDim.y},\texttt{blockDim.z}).
+\]
+则
+\[
+\begin{aligned}
+N_{\mathrm{blocks}} &= G_xG_yG_z,\\
+N_{\mathrm{threads/block}} &= B_xB_yB_z,\\
+N_{\mathrm{threads,total}} &= G_xG_yG_zB_xB_yB_z.
+\end{aligned}
+\]
+
+这些乘积计算的是\emph{启动}的线程数量。有效工作项数量由数据尺寸决定，边界处多出的线程会通过条件判断退出。
+
+\begin{derivationbox}[title=三维逻辑坐标的线性化]
+多维线程索引可逐维使用；在需要给全部启动线程构造一个线性序号时，可进一步线性化。令
+\[
+N_x=G_xB_x,\qquad N_y=G_yB_y,
+\]
+并用 $(g_z,g_y,g_x)$ 表示线程的三维全局坐标，则按 $x$ 最快变化的顺序，线性线程坐标可写为
+\[
+  q=(g_zN_y+g_y)N_x+g_x.
+\]
+该式只是坐标表示的补充。处理二维数据时，直接保留 $(r,c)$ 通常更清晰，无需先构造 $q$ 再反解行列。
+\end{derivationbox}
+
+\subsection{每次核函数启动拥有独立配置}
+
+同一应用中的多个核函数可以使用彼此独立的网格尺寸与块尺寸。配置属于某一次核函数启动，不是整个程序的固定属性。图像处理阶段可以采用二维组织，向量阶段可以采用一维组织，体数据计算可以采用三维组织。只要每次启动时传入的配置与该核函数的工作项形状一致即可。

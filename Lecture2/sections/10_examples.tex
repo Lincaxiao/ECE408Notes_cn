@@ -1,0 +1,66 @@
+\section{例题与完整推导}
+
+\subsection{例题一：读取核函数启动配置}
+
+\par\noindent\begin{minipage}{\linewidth}
+给定
+\begin{lstlisting}[style=cuda,numbers=none]
+kernel<<<VECTOR_N, ELEMENT_N>>>(d_C, d_A, d_B, ELEMENT_N);
+\end{lstlisting}
+\end{minipage}\par
+三重尖括号中的第一个参数是线程块数，第二个参数是每块线程数。因此
+\[
+\boxed{\text{每块线程数}=\code{ELEMENT\_N}}
+\]
+且
+\[
+\boxed{\text{网格总线程数}=\code{VECTOR\_N}\times\code{ELEMENT\_N}}.
+\]
+变量名不会改变语法位置的含义；即使命名不理想，也必须按 CUDA 启动规则解释。
+
+\subsection{例题二：每线程处理 8 个元素}
+
+已知向量长度 $n=16000$，每个线程处理 $k=8$ 个输出元素，线程块大小 $T=256$。
+
+第一步，求逻辑上需要的工作线程数：
+\[
+L=\left\lceil\frac{n}{k}\right\rceil
+ =\frac{16000}{8}=2000.
+\]
+第二步，求线程块数：
+\[
+B=\left\lceil\frac{L}{T}\right\rceil
+ =\left\lceil\frac{2000}{256}\right\rceil=8.
+\]
+第三步，求实际启动线程数：
+\[
+N_{\mathrm{launch}}=BT=8\times256=2048.
+\]
+因此答案为
+\[
+\boxed{2048\text{ 个线程}}.
+\]
+其中 48 个线程没有完整工作。实现\term{线程粗化}{thread coarsening}时，线程 $q$ 可令起始元素为 $kq$，并对其负责的每个元素分别检查是否小于 $n$。
+
+\subsection{例题三：局部变量有多少份}
+
+核函数启动 $B=512$ 个线程块，每块 $T=256$ 个线程。总线程数为
+\[
+BT=512\times256=131072.
+\]
+若核函数中声明一个普通自动局部变量，则每个线程拥有自己的逻辑副本，因此整个执行生命周期中共有
+\[
+\boxed{131072\text{ 份}}
+\]
+线程私有版本。这里计算的是逻辑变量实例数；编译器可能把变量放入寄存器，也可能因资源压力使用局部内存，但线程私有语义不变。
+
+\subsection{特殊长度输入}
+
+\[
+B=\left\lceil\frac{4097}{256}\right\rceil=17,
+\quad
+N_{\mathrm{launch}}=17\times256=4352,
+\quad
+E=4352-4097=255.
+\]
+该例达到单个线程块大小下“额外线程数”的最大可能值 $T-1$，说明边界检查不是罕见特例，而是通用模板的一部分。

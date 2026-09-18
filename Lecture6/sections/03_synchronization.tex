@@ -1,0 +1,98 @@
+\Needspace{16\baselineskip}
+\section{线程块同步与正确执行顺序}
+\label{l6:sec:sync}
+
+\subsection{共享数据带来的两类依赖}
+\subsubsection{使用之前，必须完成当前分块加载}
+每个线程只加载当前输入分块的一小部分，却会在内积循环中读取其他线程负责的元素。例如，线程 $(t_x,t_y)$ 在第 $k$ 步读取的 $A_s[t_y][k]$，由线程 $(k,t_y)$ 加载；$B_s[k][t_x]$，由线程 $(t_x,k)$ 加载。开始计算之前，必须保证这些加载已经完成。
+
+\subsubsection{覆盖之前，必须完成上一分块使用}
+两轮分块复用相同的共享数组 $A_s$、$B_s$。较快的线程如果提前进入下一轮，就可能把第 $q+1$ 轮数据写到仍被其他线程读取的位置。这会让某些乘积混用两轮输入。进入下一轮加载之前，需要确认当前轮的读取和计算已经结束。
+
+这两类依赖分别保护“生产完成后再消费”和“消费完成后再覆盖”。只等待加载完成，不能保护共享数组的再次使用。
+
+\subsection{屏障与整体同步执行}
+\subsubsection{屏障的含义}
+\term{屏障}{barrier} 是线程集合共同到达的同步点。先到达的线程等待其余线程；参与线程全部到达后，才能继续执行屏障之后的代码。
+
+\term{整体同步执行}{bulk synchronous execution} 将并行计算划分为若干阶段：每个阶段内部，各线程并行完成自己的工作；阶段之间由屏障建立清晰的先后关系。线程在一个阶段内部的执行进度可以不同。
+
+\begin{figure}[H]
+ \centering
+ \includegraphics[width=0.69\linewidth]{barrier_p29.png}
+ \caption{线程以不同进度到达屏障，在共同的同步点之后继续执行。}
+ \label{l6:fig:barrier}
+\end{figure}
+
+\subsubsection{CUDA 的块内同步}
+\code{__syncthreads()} 是 CUDA 的设备端内置同步操作，用于同一线程块中的线程。线程块内的所有线程需要到达相应同步点，才能继续执行。
+
+同步调用可以位于条件分支内，前提是该条件对整个参与线程块一致。如果只有一部分线程执行同步，执行可能挂起或产生错误行为。边界线程处理尤其需要保持这一点：线程的输入加载是否有效可以不同，但参与分块循环和同步的结构应保持一致。
+
+\begin{keybox}[title={每一轮的执行顺序}]
+\centering
+协作加载 $A_s,B_s$\quad$\longrightarrow$\quad\code{__syncthreads()}\\[4pt]
+当前分块的部分内积\quad$\longrightarrow$\quad\code{__syncthreads()}\\[4pt]
+然后进入下一轮加载。
+\par\raggedright
+第一个屏障保证“数据已准备好”，第二个屏障保证“旧数据已使用完”。屏障作用于当前线程块；不同输出块具有各自的输入缓冲区和输出区域。
+\end{keybox}
+
+\subsection{整除情形的完整核函数}
+\par\noindent\begin{minipage}{\linewidth}
+下面将加载、两次同步、部分内积和写回组合起来。假设 $N>0$ 且 $T$ 整除 $N$，所有矩阵均按行主序存储；线程块大小固定为 $T\times T$，每线程负责一个输出。代码将 \code{TILE_DIM} 设为 $16$，这一取值仅用于具体化示例。
+
+\begin{lstlisting}[caption={带两次块内同步的方阵分块核函数。},label={l6:lst:basic}]
+#include <cuda_runtime.h>
+#define TILE_DIM 16
+
+__global__ void matmul_tiled_square(
+    const float* A, const float* B, float* C, int N)
+{
+    __shared__ float A_s[TILE_DIM][TILE_DIM];
+    __shared__ float B_s[TILE_DIM][TILE_DIM];
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int row = blockIdx.y * TILE_DIM + ty;
+    const int col = blockIdx.x * TILE_DIM + tx;
+    float sum = 0.0f;
+
+    for (int q = 0; q < N / TILE_DIM; ++q) {
+        A_s[ty][tx] = A[row * N + q * TILE_DIM + tx];
+        B_s[ty][tx] = B[(q * TILE_DIM + ty) * N + col];
+        __syncthreads();  // Wait for all tile producers.
+
+        for (int k = 0; k < TILE_DIM; ++k) {
+            sum += A_s[ty][k] * B_s[k][tx];
+        }
+        __syncthreads();  // Wait for all tile consumers.
+    }
+    C[row * N + col] = sum;
+}
+\end{lstlisting}
+
+\end{minipage}\par
+
+\Needspace{9\baselineskip}
+\par\noindent\begin{minipage}{\linewidth}
+对应的主机端启动代码为：
+
+\begin{lstlisting}[numbers=none]
+dim3 block(TILE_DIM, TILE_DIM);
+dim3 grid(N / TILE_DIM, N / TILE_DIM);
+matmul_tiled_square<<<grid, block>>>(d_A, d_B, d_C, N);
+\end{lstlisting}
+\end{minipage}\par
+其中 \code{d_A}、\code{d_B}、\code{d_C} 是已经分配的设备端矩阵指针。启动片段只说明线程配置，沿用已完成输入准备和设备内存分配的前提。
+
+\subsubsection{正确性的阶段不变量}
+以下不变量用于形式化说明代码~\ref{l6:lst:basic} 的执行过程。第 $q$ 轮开始时，线程 $(t_x,t_y)$ 的累加值为
+\[
+ \code{sum}=\sum_{j=0}^{qT-1}A_{r,j}B_{j,c}.
+\]
+第一次同步之后，当前所需的共享行与共享列均已加载。内积循环增加
+\[
+ \sum_{k=0}^{T-1}A_{r,qT+k}B_{qT+k,c},
+\]
+所以本轮结束时，累加范围恰好扩展为 $0\le j<(q+1)T$。第二次同步保证当前输入不会被过早覆盖。全部 $N/T$ 轮结束后，累加范围覆盖 $0\le j<N$，因而 \code{sum} 等于 $C_{r,c}$。
+\FloatBarrier

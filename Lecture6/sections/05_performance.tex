@@ -1,0 +1,142 @@
+\Needspace{9\baselineskip}
+\section{分块收益与资源约束}
+\label{l6:sec:performance}
+
+\subsection{用数据流量解释计算收益}
+\subsubsection{一个分块轮次的加载量与计算量}
+以下推导展开分块减少全局访问的数量关系。采用 $N\times N$ 方阵，且 $T$ 整除 $N$；按代码中的全局输入加载计数，暂时忽略缓存效果、输出流量、同步和其他执行开销。
+
+一个线程块的一轮计算，需要加载两个 $T\times T$ 输入块，共 $2T^2$ 个 \code{float}，即 $8T^2$ 字节。该轮计算 $T^2$ 个输出部分和，每个包含 $T$ 次乘加；按每次乘加两个浮点运算计，计算量为 $2T^3$ FLOP。于是，\term{计算强度}{arithmetic intensity} 为
+\begin{equation}
+ I_T=\frac{2T^3\ \mathrm{FLOP}}{8T^2\ \mathrm{B}}
+ =\frac{T}{4}\ \mathrm{FLOP/B}.
+ \label{l6:eq:arithmetic-intensity}
+\end{equation}
+等价地，每个浮点运算需要 $4/T$ 字节的全局输入数据。$T$ 增大时，同一输入被更多输出复用。
+
+对比不使用共享复用的情况：$T^2$ 个线程各自为 $T$ 个内积步加载两次输入，共有 $2T^3$ 次输入元素加载；协作加载只需 $2T^2$ 次。因此，当前线程块这一轮的输入加载量减少为原来的 $1/T$。
+
+\subsubsection{整个矩阵乘法的流量}
+不使用共享复用时，$N^2$ 个输出各需 $2N$ 次输入加载，总数为 $2N^3$。分块后，有 $(N/T)^2$ 个输出块，每块执行 $N/T$ 轮，每轮加载 $2T^2$ 个输入元素，得到
+\begin{equation}
+ L_T=\left(\frac{N}{T}\right)^2
+      \frac{N}{T}\,2T^2
+    =\frac{2N^3}{T}.
+ \label{l6:eq:global-load-count}
+\end{equation}
+当前方法的复用发生在线程块内部；不同输出块仍分别加载它们需要的输入块。上述计数保留了这一点。
+
+\begin{derivationbox}[title={将输出写回加入流量模型}]
+每个有效输出最终写回一次，故输出流量为 $4N^2$ 字节。把输入与输出合并，可得到更完整的计算强度近似：
+\[
+ I_T^{\mathrm{in+out}}
+ =\frac{2N^3}{8N^3/T+4N^2}
+ =\frac{NT}{4N+2T}\ \mathrm{FLOP/B}.
+\]
+当 $N$ 相对 $T$ 很大时，该式趋近 $T/4$。这一补充用于说明忽略输出写回的近似条件，其余缓存和执行开销仍未包含。
+\end{derivationbox}
+
+\subsection{带宽瓶颈如何转向计算瓶颈}
+令 $P_{\mathrm{peak}}$ 表示计算峰值，$B_{\mathrm{mem}}$ 表示全局内存带宽。用计算峰值和带宽支持能力作为两项上界，可写成
+\begin{equation}
+ P_T\le\min\!\left(P_{\mathrm{peak}},\ B_{\mathrm{mem}}I_T\right).
+ \label{l6:eq:performance-bound}
+\end{equation}
+这是一种用于解释瓶颈转移的简化模型。代入示例的 $P_{\mathrm{peak}}=1000\,\mathrm{GFLOP/s}$、$B_{\mathrm{mem}}=150\,\mathrm{GB/s}$，有
+\[
+ B_{\mathrm{mem}}I_T=37.5T\ \mathrm{GFLOP/s}.
+\]
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}p{0.10\linewidth}p{0.21\linewidth}Y Y@{}}
+\toprule
+$T$ & 输入字节/FLOP & 带宽支持能力 & 同时考虑计算峰值 \\
+\midrule
+$1$ & $4$ & $37.5\,\mathrm{GFLOP/s}$ & $37.5\,\mathrm{GFLOP/s}$ \\
+$16$ & $0.25$ & $600\,\mathrm{GFLOP/s}$ & $600\,\mathrm{GFLOP/s}$ \\
+$32$ & $0.125$ & $1200\,\mathrm{GFLOP/s}$ & $1000\,\mathrm{GFLOP/s}$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+$16\times16$ 分块把带宽支持能力提高到 $600\,\mathrm{GFLOP/s}$。$32\times32$ 分块的输入供给可以支持 $1200\,\mathrm{GFLOP/s}$，已经超过示例 GPU 的计算峰值，所以该简化模型的限制转为计算能力。
+
+这些数值描述带宽可以支撑的运算量及理论上界。实际执行还受到输出流量、缓存效果、同步、占用率和寄存器压力影响；这些因素正是从流量模型走向实际性能时需要补充的项。
+
+\subsection{分块尺寸与驻留资源}
+\subsubsection{每个线程块需要多少资源}
+每线程一个输出、两个共享输入块的基本实现中，线程数和共享内存用量为
+\begin{equation}
+ n_{\mathrm{threads}}=T^2,\qquad
+ S_{\mathrm{block}}=2T^2\operatorname{sizeof}(\code{float})
+ =8T^2\ \mathrm{B}.
+ \label{l6:eq:block-resources}
+\end{equation}
+较大的分块带来更多复用，也同时增大线程块和共享内存占用。资源分配会限制一个\term{流多处理器}{streaming multiprocessor, SM} 上可同时驻留的线程块数量，进而影响\term{占用率}{occupancy}。
+
+占用率描述驻留 warp 相对于硬件可容纳 warp 数的比例。对这里的 $16\times16$、$32\times32$ 规则线程块，可通过驻留线程数与线程上限比较其资源占用水平。资源容量给出驻留数量的上界，实际驻留状态还取决于核函数的资源需求。
+
+\subsubsection{示例：共享容量限制与线程容量限制}
+采用第一代 Maxwell 的示例条件：每个 SM 有 $64\,\mathrm{kB}$ 共享内存，每线程块最多使用 $48\,\mathrm{kB}$，每个 SM 最多驻留 $2048$ 个线程。以下存储容量换算使用 $1\,\mathrm{kB}=1024\,\mathrm{B}$。
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}Y p{0.24\linewidth}p{0.24\linewidth}@{}}
+\toprule
+资源或计数 & $T=16$ & $T=32$ \\
+\midrule
+每块线程数 $T^2$ & $256$ & $1024$ \\
+每块共享内存 $8T^2$ & $2048\,\mathrm{B}=2\,\mathrm{kB}$ & $8192\,\mathrm{B}=8\,\mathrm{kB}$ \\
+仅按共享容量限制的块数 & $64/2=32$ & $64/8=8$ \\
+仅按线程容量限制的块数 & $2048/256=8$ & $2048/1024=2$ \\
+上述两项合并的块数上限 & $8$ & $2$ \\
+相应驻留线程数上限 & $8\times256=2048$ & $2\times1024=2048$ \\
+每线程两次加载的计数 & $8\times256\times2=4096$ & $2\times1024\times2=4096$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+两个分块尺寸在这一估算中都暴露出 $4096$ 个待加载操作。$32\times32$ 分块虽然允许驻留的线程块更少，但每块线程更多，合计线程数相同；其输入复用倍数则更高。这里的加载数是按驻留线程和每线程两次加载得到的并行性估算。
+
+\subsubsection{寄存器与其他上限共同决定驻留数量}
+共享内存和线程数是两项直接可见的限制，寄存器数量及每 SM 的线程块数量上限也会约束驻留。令 $S_{\mathrm{SM}}$ 为每 SM 共享内存容量，$R_{\mathrm{SM}}$ 为寄存器数量，$R_{\mathrm{thread}}$ 为每线程寄存器用量，$n_{\max}$ 与 $B_{\max}$ 分别为每 SM 的线程数和块数上限。可用下面的理想化上界概括最紧资源约束：
+\begin{equation}
+ B_{\mathrm{active}}\le\min\!\left\{
+ B_{\max},\ 
+ \left\lfloor\frac{n_{\max}}{T^2}\right\rfloor,\ 
+ \left\lfloor\frac{S_{\mathrm{SM}}}{8T^2}\right\rfloor,\ 
+ \left\lfloor\frac{R_{\mathrm{SM}}}{R_{\mathrm{thread}}T^2}\right\rfloor
+ \right\}.
+ \label{l6:eq:residency}
+\end{equation}
+该式将资源容量除以每块需求，表达“由最先耗尽的资源限制驻留”的原则；实际资源分配粒度未包含在内。每块资源需求还必须满足设备对单个线程块的限制。
+
+\begin{table}[H]
+\centering
+\caption{GPU 资源规格示例；M40 属于第二代 Maxwell。}
+\label{l6:tab:gpu-resources}
+\begingroup
+\fontsize{8.8}{11}\selectfont
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabularx}{\linewidth}{@{}p{0.255\linewidth}*{6}{>{\centering\arraybackslash}X}@{}}
+\toprule
+GPU 型号 & K40 & M40 & P100 & V100 & A100 & H100 \\
+\midrule
+微架构 & Kepler & Maxwell & Pascal & Volta & Ampere & Hopper \\
+计算能力 & 3.5 & 5.2 & 6.0 & 7.0 & 8.0 & 9.0 \\
+SM 数量 & 15 & 24 & 56 & 80 & 108 & 132 \\
+每 SM 核心数 & 192 & 128 & 64 & 64 & 64 & 128 \\
+每 SM 最大线程数 & 2048 & 2048 & 2048 & 2048 & 2048 & 2048 \\
+每 SM 最大块数 & 16 & 32 & 32 & 32 & 32 & 32 \\
+每块最大线程数 & 1024 & 1024 & 1024 & 1024 & 1024 & 1024 \\
+每 SM 寄存器数 & 64K & 64K & 64K & 64K & 64K & 64K \\
+每 SM 共享内存 & 48KB & 96KB & 64KB & 96KB & 164KB & 228KB \\
+\bottomrule
+\end{tabularx}
+\endgroup
+\end{table}
+
+\subsubsection{如何理解分块尺寸的取舍}
+分块边长 $T$ 同时影响两组数量：复用次数随 $T$ 增长，而每块线程数与共享内存需求随 $T^2$ 增长。选择尺寸时，需要把输入复用、可驻留线程块数量、寄存器消耗和同步代价放在同一个执行模型中考虑。
+
+基本实现中，$16\times16$ 对应 $256$ 个线程，$32\times32$ 对应 $1024$ 个线程；后者已经达到表~\ref{l6:tab:gpu-resources} 中列出的每块最大线程数。提高复用的空间因此也受到线程映射方式约束。具体核函数在实际设备上的较优尺寸仍需由测量确定。
+\FloatBarrier

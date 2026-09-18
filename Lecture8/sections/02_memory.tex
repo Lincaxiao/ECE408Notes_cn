@@ -1,0 +1,111 @@
+\Needspace{8\baselineskip}
+\section{缓存层次与常量存储器}
+\label{l8:sec:memory}
+\subsection{从主存访问到缓存命中}
+GPU 的计算需要持续获得输入。如果每次读取都访问全局存储器中的底层数据，带宽就可能限制执行速度。分块矩阵乘法通过共享内存显式复用输入；\term{缓存}{cache}则在硬件管理下保留近期访问数据，为后续读取提供另一条复用路径。
+
+缓存由若干\term{缓存行}{cache line}组成，每行可存放一段连续地址的数据。当请求的数据尚未在缓存中时，硬件把包含该地址的一行数据带入缓存；缓存中还保存\term{标签}{tag}，记录该行对应的内存地址。后续请求找到对应数据时称为缓存命中，否则需要继续访问后面的存储层次。缓存数据是原数据的副本。
+
+连续地址成组传输，使一次读取也可能为后续的邻近读取准备好数据。例如，一次突发传输约 $1024$ bit，即 $128$ B 时，相邻数据可以随请求位置一起进入缓存。这个示例以一次突发对应一行说明成组搬运；具体缓存行与事务大小取决于存储层次和硬件实现。
+
+\textbf{空间局部性与时间局部性。}\term{空间局部性}{spatial locality}指相近的时间里访问连续或邻近地址；\term{时间局部性}{temporal locality}指一个数据在短时间内被多次访问。对于固定线程，一维卷积沿着窗口依次读取 $N[i-r],N[i-r+1],\ldots$，体现空间局部性；相邻输出窗口重叠，使一个输入可能在较短时间内再次被使用，体现时间局部性。两种局部性都能提高缓存发挥作用的机会。
+
+缓存容量小于全局存储器，不能保留全部输入。当需要为新缓存行腾出空间时，已有行会被替换；一种典型的替换思路是\term{最近最少使用}{least recently used, LRU}，即优先替换最久没有被访问的缓存行。能否命中还取决于相关数据在再次访问前是否仍留在缓存中，因此“存在复用机会”与“每次都能缓存命中”需要分开判断。
+
+\subsection{共享内存、L1/L2 与常量缓存}
+CUDA 的存储空间在可见范围、读写方式及用途上不同。下表给出用于直观比较的近似访问周期。实际延迟取决于器件、缓存命中及访问模式，这些示例量级不构成统一的运行时间预测模型。
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}p{.18\textwidth}p{.19\textwidth}p{.15\textwidth}Y@{}}
+\toprule
+存储空间 & 可见范围 & 线程权限 & 示例访问周期 \\
+\midrule
+寄存器 & 单线程 & 读、写 & $\sim1$ cycle \\
+共享内存 & 同一线程块 & 读、写 & $\sim5$ cycles \\
+全局存储器 & 网格内线程 & 读、写 & $\sim500$ cycles \\
+常量存储器 & 网格内线程 & 只读 & 缓存条件下 $\sim5$ cycles \\
+\bottomrule
+\end{tabularx}
+\caption{CUDA 存储空间的程序员视图与教学访问量级。}
+\end{table}
+
+共享内存与缓存都利用靠近 SM 的片上存储减少主存压力，但\textbf{内容由谁管理}决定了它们的编程方式。共享内存是程序显式管理的暂存区（scratchpad）：程序决定把什么值写入哪个位置，并在需要时同步线程。缓存的内容则由微体系结构根据内存访问自动选择和替换，程序通常不显式指定某个数据应放入哪一条缓存行。共享内存还可以保存中间结果，不要求内容始终对应全局存储器中的一个副本。
+
+在 Volta 及之后的相关设计中，共享内存和 L1 可以使用统一的物理资源，并在这些用途之间分配。物理资源可以共享，访问与管理接口仍保持各自特点。图\ref{l8:fig:hierarchy}中的局部片上存储靠近各个 SM，L2 位于多个 SM 与全局存储器之间。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{gpu_cache_hierarchy}
+\caption{V100 与 A100 的缓存层次示例：SM 附近的局部存储、共享 L2 及其后的全局存储器。图中容量保留对应示例器件的标注。}
+\label{l8:fig:hierarchy}
+\end{figure}
+
+对于可修改的缓存数据，硬件需要处理修改状态及与后备内存的一致性。\term{常量缓存}{constant cache}服务于核函数执行期间保持不变的数据，读取路径可以针对这类模式优化。常量和纹理的只读访问路径，与一般全局访问使用的 L1 路径具有不同用途。滤波器系数的实现使用常量存储器。
+
+\subsection{滤波器的访问一致性}
+滤波器 $M$ 有三个相关性质：计算所有输出都需要它，它在一次网格执行期间保持不变，而且各线程按照相同的顺序读取系数。在循环第 $j$ 次迭代，输出位置不同的线程读取各自的 $N[i-r+j]$，同时读取同一个 $M[j]$。小而重复使用、且访问顺序一致的滤波器因此适合放入\term{常量存储器}{constant memory}。
+
+\begin{keybox}[title={同一轮乘加的两种地址关系}]
+对相邻输出线程 $i,i+1,\ldots$，固定 $j$ 时，输入地址为 $i-r+j,i+1-r+j,\ldots$，沿数组相邻分布；滤波器地址均为 $j$。输入复用与系数复用具有不同结构，分别对应后续共享内存分块与常量存储器优化。
+\end{keybox}
+
+\textbf{同地址访问与广播。}同一 warp 的线程访问同一常量地址时可以共享该次读取；访问多个不同地址时，请求按不同地址串行处理，代价随不同地址数增加。因此 \code{Mc[j]} 的一致访问有利，而按线程编号访问各不相同的常量位置就不具备同样的优势。
+
+输入 $N$ 在本次卷积中也保持只读，但往往比滤波器大得多。常量存储器总容量上限为 $64$ KB，因此是否只读只是选择条件之一；还要考虑容量与访问结构。$64$ KB 指常量地址空间的容量约束，不能从这个数字直接推出每个 SM 的常量缓存大小。常量缓存未命中时仍需取得后备数据。
+
+\subsection{声明、初始化与常量版核函数}
+常量数组通过 \mbox{\code{__constant__}} 在所有主机函数与设备核函数之外声明。主机用 \mbox{\code{cudaMemcpyToSymbol}} 将权重复制到这个符号；主机端数据可以运行时生成，设备端执行网格期间按只读方式使用这些系数。
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={常量滤波器声明及主机初始化；五个系数沿用一维数值例。}]
+constexpr int MASK_WIDTH = 5;
+__constant__ float Mc[MASK_WIDTH];
+// Inside a host function, before launching the kernel:
+float Mask[MASK_WIDTH] = {3, 4, 5, 4, 3};
+cudaError_t status = cudaMemcpyToSymbol(
+    Mc, Mask, MASK_WIDTH * sizeof(float));
+if (status != cudaSuccess) {
+    // Report or propagate the error; do not launch on failure.
+    return;
+}
+\end{lstlisting}
+\end{minipage}\par
+
+复制长度的单位是字节，所以必须乘以 \code{sizeof(float)}。这次调用采用默认偏移 $0$ 与默认方向 \mbox{\code{cudaMemcpyHostToDevice}}。权重也可以由随机数生成器产生；核函数启动之前，都需要先完成权重初始化和复制。
+
+常量版只把原先的 \code{M[j]} 改为 \code{Mc[j]}，窗口起点、边界条件与求和次序均保持不变：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={使用常量滤波器的一维卷积。},label={l8:lst:constant}]
+__global__ void convolution_1D_constant_kernel(
+    const float* N, float* P, int Mask_Width, int Width)
+{
+    int i = int(blockIdx.x) * int(blockDim.x)
+          + int(threadIdx.x);
+    if (i >= Width) return;
+    float Pvalue = 0.0f;
+    int N_start_point = i - Mask_Width / 2;
+    for (int j = 0; j < Mask_Width; ++j) {
+        int q = N_start_point + j;
+        if (q >= 0 && q < Width) {
+            Pvalue += N[q] * Mc[j];
+        }
+    }
+    P[i] = Pvalue;
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\textbf{参数与初始化条件。}常量版直接读取设备符号 \code{Mc[j]}，因此核函数参数只包含输入、输出及两种宽度，无须传入滤波器指针。调用应传入已经初始化的有效宽度，满足 $0<K\le\mbox{\code{MASK_WIDTH}}$；后续完整示例固定采用奇数 $K=5$。
+
+假设 \mbox{\code{Nd}}、\mbox{\code{Pd}} 已完成设备端分配、\mbox{\code{Nd}} 已存有输入，$W>0$，取每块 $B$ 个线程，则调用形式为
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={与常量版核函数匹配的启动参数。}]
+dim3 dimBlock(B);
+dim3 dimGrid(1 + (Width - 1) / B);
+convolution_1D_constant_kernel<<<dimGrid, dimBlock>>>(
+    Nd, Pd, MASK_WIDTH, Width);
+\end{lstlisting}
+\end{minipage}\par
+常量版改善了系数的读取路径，但相邻线程仍会反复请求重叠的输入窗口。共享内存分块进一步利用 $N$ 的复用。
+\FloatBarrier

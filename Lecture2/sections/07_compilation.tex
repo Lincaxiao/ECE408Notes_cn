@@ -1,0 +1,49 @@
+\section{函数限定符与 CUDA 编译流程}
+
+\subsection{三类函数限定符}
+
+CUDA C++ 用\term{函数限定符}{function qualifier}说明函数从哪里调用、在哪里执行。
+
+\begin{center}
+\begin{tabularx}{0.96\textwidth}{>{\ttfamily}l l l X}
+\toprule
+\normalfont\textbf{限定符} & \textbf{可调用位置} & \textbf{执行位置} & \textbf{含义}\\
+\midrule
+\_\_host\_\_ & 主机（host） & 主机（host） & 普通主机函数；省略限定符时的默认情况。\\
+\addlinespace
+\_\_global\_\_ & 主机，或受支持的设备端启动 & 设备（device） & 核函数；调用时创建新的线程网格，返回类型必须为 \code{void}。\\
+\addlinespace
+\_\_device\_\_ & 设备（device） & 设备（device） & 由核函数或其他设备函数调用，不创建新网格。\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\par\noindent\begin{minipage}{\linewidth}
+同一个普通函数也可以同时标记为
+\begin{lstlisting}[style=cuda,numbers=none]
+__host__ __device__ float add(float a, float b) {
+    return a + b;
+}
+\end{lstlisting}
+\end{minipage}\par
+编译器会为主机和设备分别生成版本。调用端仍需满足各自执行环境的限制。
+
+\subsection{从 .cu 源文件到 CPU/GPU 机器代码}
+
+CUDA 源文件通常使用 \code{.cu} 扩展名，并交给\term{NVIDIA CUDA 编译器}{NVIDIA CUDA Compiler, NVCC}。NVCC 根据函数限定符区分主机代码与设备代码：
+
+\begin{enumerate}
+  \item 主机部分交给常规 C/C++ 编译器，生成 CPU 目标代码；
+  \item 设备部分先生成\term{并行线程执行中间表示}{Parallel Thread Execution, PTX}；
+  \item PTX 在安装或运行阶段由\term{即时编译器}{just-in-time compiler, JIT compiler}转化为目标 GPU 的设备机器码，常以 SASS 表示。
+\end{enumerate}
+
+\slidefig{0.94}{page-28.png}{CUDA 程序的主机代码与设备代码编译路径}
+
+\par\noindent\begin{minipage}{\linewidth}
+一个典型编译命令为
+\begin{lstlisting}[style=cuda,numbers=none]
+nvcc -O2 -std=c++17 vec_add.cu -o vec_add
+\end{lstlisting}
+\end{minipage}\par
+其中 \code{-O2} 请求优化，\code{-std=c++17} 选择 C++ 语言标准。构建脚本或作业框架可以进一步封装这一步。

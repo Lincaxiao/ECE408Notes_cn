@@ -1,0 +1,172 @@
+\section{实例三：矩阵与矩阵乘法}
+
+\subsection{输出元素的定义}
+
+设方阵 $A,B\in\mathbb{R}^{N\times N}$，其乘积记为
+\[
+C=AB.
+\]
+采用从 0 开始的下标，输出元素 $C_{r,c}$ 是 $A$ 的第 $r$ 行与 $B$ 的第 $c$ 列的内积：
+\[
+\boxed{
+C_{r,c}=\sum_{k=0}^{N-1}A_{r,k}B_{k,c}
+}.
+\]
+固定 $(r,c)$ 后，求和变量 $k$ 枚举共享维度。不同输出位置写入 $C$ 的不同元素，因此可以并行计算：
+\[
+\boxed{\text{一个线程} \longleftrightarrow \text{一个输出矩阵元素}}.
+\]
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.67\textwidth]{matmul_mapping_p30.png}
+  \caption{输出元素由 $A$ 的一行与 $B$ 的一列做逐项乘积并求和得到；二维线程网格覆盖输出矩阵。}
+\end{figure}
+
+这种分解与图像模糊具有相同的外层结构：线程坐标决定一个输出位置，线程内部再用循环遍历生成该输出所需的多个输入。区别在于，模糊遍历二维局部邻域，矩阵乘法遍历长度为 $N$ 的共享维度。
+
+\subsection{简化方阵核函数}
+
+方阵情形可使用以下简化实现：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={简化的方阵乘法核函数}]
+__global__
+void mm_kernel(float* A, float* B, float* C,
+               unsigned int N)
+{
+    unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
+    unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float sum = 0.0f;
+    for (unsigned int k = 0; k < N; ++k) {
+        sum += A[row * N + k] * B[k * N + col];
+    }
+
+    C[row * N + col] = sum;
+}
+\end{lstlisting}
+\end{minipage}\par
+
+代码中三个线性下标分别对应
+\[
+\begin{aligned}
+A_{r,k}&\longleftrightarrow \texttt{A[row * N + k]},\\
+B_{k,c}&\longleftrightarrow \texttt{B[k * N + col]},\\
+C_{r,c}&\longleftrightarrow \texttt{C[row * N + col]}.
+\end{aligned}
+\]
+该简化版本未包含边界条件。只有在启动线程区域恰好不越过 $N\times N$ 输出范围，或调用者另有保证时，所有访问才有效；一般实现必须显式处理边界。
+
+\subsection{一般矩形矩阵}
+
+矩阵不必为方阵。设
+\[
+A\in\mathbb{R}^{M\times K},\qquad
+B\in\mathbb{R}^{K\times N}.
+\]
+两者共享维度均为 $K$，输出为
+\[
+C=AB\in\mathbb{R}^{M\times N},
+\]
+并满足
+\[
+\boxed{
+C_{r,c}=\sum_{k=0}^{K-1}A_{r,k}B_{k,c}},
+\qquad
+0\leq r<M,
+\quad
+0\leq c<N.
+\]
+
+这里三个矩阵的行主序宽度不同：$A$ 的每行宽度为 $K$，$B$ 与 $C$ 的每行宽度为 $N$。因此正确线性下标为
+\[
+\begin{aligned}
+\operatorname{index}_A(r,k)&=rK+k,\\
+\operatorname{index}_B(k,c)&=kN+c,\\
+\operatorname{index}_C(r,c)&=rN+c.
+\end{aligned}
+\]
+把所有宽度都写成同一个 $N$ 只适用于方阵情形。
+
+\begin{derivationbox}[title=带边界条件的矩形版本]
+将维度关系推广为 $M\times K$、$K\times N$ 和 $M\times N$，并加入边界条件，可得到：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+__global__
+void mm_kernel_rect(float* A, float* B, float* C,
+                    unsigned int M,
+                    unsigned int K,
+                    unsigned int N)
+{
+    unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
+    unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < M && col < N) {
+        float sum = 0.0f;
+        for (unsigned int k = 0; k < K; ++k) {
+            sum += A[row * K + k] * B[k * N + col];
+        }
+        C[row * N + col] = sum;
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+外层条件同时保护 $A$ 的行索引、$B$ 的列索引与 $C$ 的写入位置；循环条件 $k<K$ 保护共享维度上的两次读取。
+\end{derivationbox}
+
+\subsection{网格尺寸由输出矩阵决定}
+
+由于每个线程生成一个 $C$ 元素，线程网格应覆盖 $M\times N$ 输出空间。对块尺寸 $(B_x,B_y)$，启动块数为
+\[
+G_x=\left\lceil\frac{N}{B_x}\right\rceil,
+\qquad
+G_y=\left\lceil\frac{M}{B_y}\right\rceil.
+\]
+注意 $x$ 方向对应输出列数 $N$，$y$ 方向对应输出行数 $M$；共享维度 $K$ 决定每个线程的循环长度，不决定二维网格的外部尺寸。
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={矩形矩阵乘法的启动配置}]
+dim3 threadsPerBlock(16, 16);
+dim3 numBlocks(
+    (N + threadsPerBlock.x - 1) / threadsPerBlock.x,
+    (M + threadsPerBlock.y - 1) / threadsPerBlock.y);
+
+mm_kernel_rect<<<numBlocks, threadsPerBlock>>>(A, B, C, M, K, N);
+\end{lstlisting}
+\end{minipage}\par
+
+\begin{examplebox}[title=输出空间决定启动空间]
+若 $A$ 为 $5\times3$，$B$ 为 $3\times4$，则 $C$ 为 $5\times4$。采用 $2\times2$ 线程块时，
+\[
+G_x=\left\lceil\frac{4}{2}\right\rceil=2,
+\qquad
+G_y=\left\lceil\frac{5}{2}\right\rceil=3.
+\]
+共启动 $2\times3$ 个块、$24$ 个线程，其中 $20$ 个线程对应有效输出元素，最后一行块中有 4 个线程因 $r\geq5$ 被排除。每个有效线程执行 $K=3$ 次乘加迭代。
+\end{examplebox}
+
+\subsection{单线程工作量与访问方式}
+
+每个输出元素的内积包含 $K$ 次乘法和 $K-1$ 次数学求和，核函数循环执行 $K$ 次累加。全部 $MN$ 个输出元素的算术规模随 $MNK$ 增长。
+
+从行主序下标可直接观察两种输入访问：
+\begin{itemize}
+  \item 当 $k$ 增加 1 时，\texttt{A[row * K + k]} 的下标也增加 1，线程沿 $A$ 的一行连续读取；
+  \item 当 $k$ 增加 1 时，\texttt{B[k * N + col]} 的下标增加 $N$，线程沿 $B$ 的一列跨行读取。
+\end{itemize}
+
+相邻输出线程会重复需要 $A$ 的同一行片段或 $B$ 的同一列片段，但简化核函数直接从全局内存逐次读取，没有显式利用这些重用关系。因此，该实现的主要问题是性能：计算单元可能花费大量时间等待数据，形成以内存访问为主的瓶颈。
+
+\begin{keybox}
+矩阵乘法的三个维度承担不同角色：
+\[
+\begin{array}{c|c}
+\text{维度} & \text{作用}\\
+\hline
+M & \text{输出行数，也决定网格的 }y\text{ 向覆盖范围}\\
+N & \text{输出列数，也决定网格的 }x\text{ 向覆盖范围}\\
+K & \text{内积长度，也决定每个线程的循环次数}
+\end{array}
+\]
+混淆这些维度会直接造成错误的启动配置或错误的行主序地址。
+\end{keybox}

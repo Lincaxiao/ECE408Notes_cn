@@ -1,0 +1,96 @@
+\section{DRAM 组织与带宽}
+\subsection{从存储单元到二维阵列}
+\subsubsection{电容保存比特，晶体管控制连接}
+\term{随机存取存储器}{Random Access Memory, RAM}允许直接访问任意地址，无须先顺序经过前面的存储位置。\term{动态随机存取存储器}{Dynamic RAM, DRAM}用电容上的电荷保存一个比特，并通过晶体管把该电容接到\term{位线}{bit line}上进行读写。\term{选择信号}{SELECT}决定这个连接是否导通。
+
+电容会漏电，保存的信息因此需要周期性\term{刷新}{refresh}；典型时间尺度为数十毫秒。每个比特只需要一个晶体管和一个电容，因此可以在有限面积内布置大量存储单元。
+
+\subsubsection{高密度与慢访问来自同一组织方式}
+在示意组织中，一根位线连接约 1,000 个单元，地址译码选择其中一个单元与位线接通。存储单元的电容很小，长位线的电容却很大；微小电荷改变位线状态需要时间，因此还要使用\term{感应放大器}{sense amplifier}来加速信号检测。
+
+一个 DRAM \term{存储体}{bank}由二维单元阵列组成：先激活一行，再按列选择数据。一条行选择线连接约 1,000 根位线，这与每根位线上的约 1,000 个单元一起形成约 $10^6$ 比特量级的示意阵列。这些数值用于说明组织规模。
+
+\paragraph{各部件的分工}
+\term{行译码器}{row decoder}根据行地址选择一行；感应放大器检测单元数据；\term{列锁存器}{column latches}保存已取得的行数据；\term{多路选择器}{multiplexer, Mux}再根据列地址选择输出。访问阵列和从已取得的数据中选择输出，构成快慢不同的两个阶段。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.76\linewidth]{dram_bank.png}
+  \caption{DRAM bank 的行译码、阵列、感应放大器、列锁存器与多路选择器。上部阵列访问较慢，已取得数据的列选择与输出相对较快。}
+  \label{l7:fig:dram-bank}
+\end{figure}
+\FloatBarrier
+
+\subsection{选行、选列与突发传输}
+\subsubsection{一次访问的三个阶段}
+\term{行激活}{row activation}把选定行的数据打开到\term{行缓冲区}{row buffer}；\term{列访问}{column access}从已打开的行中选择所需数据；\term{突发传输}{burst transfer}通过内存接口传送一串连续数据。
+
+行地址与列地址承担不同的选择任务。行访问先承担较慢的阵列操作，后续数据可以从已经取得的内容中选出。这样，一次较慢的准备工作可支持多个相邻数据的输出。
+
+\subsubsection{\texorpdfstring{$8\times2$}{8x2} 比特小存储体示例}
+“$8\times2$ bit”表示 8 个可寻址位置、每个位置 2 bit，总计 16 bit。按图中的地址划分，地址的前两位控制行选择，最后一位控制行内数据选择。示意阵列画成 4 行、每行 4 bit。
+
+地址从 \code{010} 变为 \code{011} 时，仅最后一位改变。两次访问复用已取得的行数据，只改变后续的选择与输出，从而共用较慢的前期工作。
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[b]{0.44\linewidth}
+    \centering
+    \includegraphics[height=1.65in,width=\linewidth,keepaspectratio]{dram_select_010.png}
+    \caption{地址 \code{010}：选行后选择一组数据。}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.53\linewidth}
+    \centering
+    \includegraphics[height=1.65in,width=\linewidth,keepaspectratio]{dram_select_011.png}
+    \caption{地址 \code{011}：保持行选择，改变行内选择。}
+  \end{subfigure}
+  \caption{同一批已取得的数据支持相邻地址的输出。地址前两位以蓝色标记，最后一位以绿色标记。}
+  \label{l7:fig:dram-small}
+\end{figure}
+
+\subsubsection{把慢阶段的成本分摊到多个数据}
+小存储体的时序模型用橙色表示较慢的阵列访问，用绿色表示较快的数据输出。访问同一 burst 中的数据，可以共用前面的橙色阶段；图中不同 burst 的示意则重复了这个阶段。
+
+\paragraph{示意时序的形式化}
+设 $L$ 为一次慢阶段的时间，$t$ 为一次快输出的时间，$q$ 为所需输出的数据个数。在“每个数据单独重复慢阶段”和“$q$ 个数据共用慢阶段”这两个示意情形下，分别有
+\begin{align}
+  T_{\mathrm{separate}} &= q(L+t),\\
+  T_{\mathrm{burst}} &= L+qt,\\
+  T_{\mathrm{separate}}-T_{\mathrm{burst}} &= (q-1)L.
+\end{align}
+$L$ 和 $t$ 分别表示模型中的慢阶段与输出阶段耗时；时间式通过比较两阶段的重复次数解释 burst 的收益。
+
+\begin{keybox}[title={突发传输的带宽含义}]
+连续数据能够分摊一次较慢的准备成本。若一次传输带来的数据大部分都会被使用，接口传输的数据就能更多地转化为程序需要的数据；若只使用其中少量位置，其余传输占用的带宽就没有直接贡献。
+\end{keybox}
+\FloatBarrier
+
+\subsection{多个存储体与内存级并行}
+\subsubsection{通过重叠操作填补传输间隙}
+单个 bank 即使使用 burst，两次突发传输之间仍可能存在等待时间。多个 bank 分别处理独立请求时，控制器可以把它们的内部操作重叠起来，使一个 bank 准备数据的时间与另一个 bank 输出数据的时间交错，从而保持数据接口忙碌。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.88\linewidth]{dram_multibank.png}
+  \caption{多个 DRAM bank 具有各自的阵列、译码与数据选择部件，并连接到下方的数据接口。不同 bank 上的独立请求提供可重叠的内部操作。}
+  \label{l7:fig:multibank}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.86\linewidth]{dram_bank_timing.png}
+  \caption{三个 bank 的慢阶段与突发输出交错排列。绿色输出段依次出现，使整体数据传输能比单个 bank 更连续。}
+  \label{l7:fig:bank-timing}
+\end{figure}
+
+\subsubsection{硬件并行需要足够多的独立请求}
+\term{内存级并行}{memory-level parallelism, MLP}是多个独立内存操作同时处于进行中的状态。多个 bank 提供并行处理的条件，程序则需要持续发出足够多的请求，让这些 bank 有工作可做。
+
+较高的\term{流多处理器}{Streaming Multiprocessor, SM}占用率可以提供更多线程，从而增加可并发的内存访问。这与使用多个\term{线程束}{warp}隐藏计算核心中的流水线延迟具有相同的基本思路：一部分工作正在等待时，仍有其他工作可以推进。
+
+\paragraph{与单次访存效率的关系}
+合并访存改善一次 warp 访问的数据分布，MLP 改善不同请求在时间上的重叠程度。共享内存分块则通过复用减少需要发出的请求。三者分别作用于传输量、传输效率和请求并发程度。
+
+\paragraph{占用率的权衡}
+为了提高占用率，需要同时考虑每块线程数、每块共享内存和每线程寄存器。更多驻留线程有助于隐藏延迟，也会共享并竞争这些有限资源；优化目标是提供足够的独立工作，同时保留每个线程或线程块需要的复用空间。
+\FloatBarrier

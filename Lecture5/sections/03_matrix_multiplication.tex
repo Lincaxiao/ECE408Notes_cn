@@ -1,0 +1,220 @@
+
+\section{基本矩阵乘法：从公式到线程映射}
+
+\subsection{一个输出元素对应一个点积}
+
+\subsubsection{矩阵、下标与行主序地址}
+设输入矩阵 $M,N$ 和输出矩阵 $P$ 均为 $W\times W$，其中 $W$ 对应代码中的 \code{Width}。采用与 C/CUDA 代码一致的零起始下标，行、列和求和下标分别为 $i,j,k$，取值范围均为 $0,\ldots,W-1$。矩阵乘法定义为
+\begin{equation}
+P_{ij}=\sum_{k=0}^{W-1}M_{ik}N_{kj}.
+\label{l5:eq:matmul}
+\end{equation}
+一个 $P_{ij}$ 取决于 $M$ 的第 $i$ 行和 $N$ 的第 $j$ 列：将两者逐项相乘，再把这些乘积相加。数学公式与数组寻址均使用零起始下标。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.47\textwidth]{p14_matmul_geometry.png}
+\caption{沿 $M$ 的一行和 $N$ 的一列取数，计算它们在 $P$ 中交会位置的元素。}
+\label{l5:fig:matmul-geometry}
+\end{figure}
+
+\term{行主序}{row-major order}将同一行的元素连续存储。在每行包含 $W$ 个元素时，跳过前 $i$ 行需要跳过 $iW$ 个元素，再在当前行向右移动 $j$ 个元素，因此二维位置与一维偏移之间的对应关系为
+\begin{equation}
+(i,j)\longleftrightarrow iW+j.
+\label{l5:eq:row-major}
+\end{equation}
+\Needspace{9\baselineskip}
+对公式\eqref{l5:eq:matmul}中的三个矩阵，这给出
+\[
+M_{ik}\leftrightarrow\code{M[i * Width + k]},\qquad
+N_{kj}\leftrightarrow\code{N[k * Width + j]},
+\]
+\[
+P_{ij}\leftrightarrow\code{P[i * Width + j]}.
+\]
+这些表达式的下标以\emph{元素}为单位；数组元素为 \code{float} 时，访存字节量另按每个元素 4 B 计算。
+
+\subsubsection{CPU 三重循环}
+\par\noindent\begin{minipage}{\linewidth}
+固定 $i$ 与 $j$ 后，内层循环用一个私有累加器计算点积。外层的两重循环则遍历所有输出位置。
+
+\begin{lstlisting}[caption={基本 CPU 矩阵乘法，保留行主序寻址和三重循环结构。}]
+void MatrixMul(float *M, float *N, float *P, int Width)
+{
+    for (int i = 0; i < Width; ++i) {
+        for (int j = 0; j < Width; ++j) {
+            float sum = 0.0f;
+            for (int k = 0; k < Width; ++k) {
+                float a = M[i * Width + k];
+                float b = N[k * Width + j];
+                sum += a * b;
+            }
+            P[i * Width + j] = sum;
+        }
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\subsubsection{并行化输出元素}
+不同的 $P_{ij}$ 使用不同的累加器，并写入不同的输出位置；它们共同读取 $M,N$，但计算一个输出元素不依赖另一个输出元素的完成。因此，可以将外层的 $(i,j)$ 遍历映射为并行线程，让\textbf{一个线程负责一个输出元素}，而该线程内部仍顺序执行 $k$ 循环。
+
+把内层求和本身并行化会涉及\term{归约}{reduction}。浮点加法通常不满足结合律，改变求和顺序可能改变舍入结果；每个线程内部的顺序累加保持固定的求和次序。
+
+\begin{keybox}[title={CPU 循环与 GPU 线程的对应关系}]
+CPU 的两个外层循环负责“选择输出位置”，GPU 用线程的二维索引完成这项选择。内层循环负责“计算该位置上的完整点积”，仍由被分配到该位置的线程执行。
+\end{keybox}
+
+\subsection{把输出矩阵划分给二维线程块}
+
+\subsubsection{线程块、输出分块与网格大小}
+令 $T$ 为 \code{TILE_WIDTH}，即一个方形线程块在两个方向上的宽度。一个 $T\times T$ 的线程块包含 $T^2$ 个线程，负责输出矩阵中的一个 $T\times T$ 子区域，称为一个\term{分块}{tile}。
+
+当 $W$ 能被 $T$ 整除时，两个方向各需要 $W/T$ 个块。一般情况下需要向上取整，使边缘位置也被覆盖：
+\begin{equation}
+G_x=G_y=\left\lceil\frac{W}{T}\right\rceil,\qquad
+N_{\mathrm{blocks}}=G_xG_y
+=\left\lceil\frac{W}{T}\right\rceil^2.
+\label{l5:eq:blocks}
+\end{equation}
+这里的分块首先用于分配\emph{输出计算}。共享内存分块矩阵乘法进一步把 $M,N$ 的输入子矩阵显式装入共享内存，以组织输入数据复用。
+
+\Needspace{9\baselineskip}
+\subsubsection{三个网格配置例子}
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{L{0.14\textwidth} L{0.17\textwidth} Y Y Y}
+\toprule
+矩阵宽 $W$ & 块宽 $T$ & 每块线程数 & 网格尺寸 & 总块数 \\
+\midrule
+4 & 2 & $2^2=4$ & $2\times2$ & 4 \\
+8 & 2 & $2^2=4$ & $4\times4$ & 16 \\
+8 & 4 & $4^2=16$ & $2\times2$ & 4 \\
+\bottomrule
+\end{tabularx}
+\caption{输出分块大小决定单块工作量及网格中线程块的数量。}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.43\textwidth}
+\centering\includegraphics[width=\linewidth]{p19_output_tiles_2.png}
+\caption{$W=8,T=2$：16 个块。}
+\end{subfigure}\hfill
+\begin{subfigure}{0.43\textwidth}
+\centering\includegraphics[width=\linewidth]{p20_output_tiles_4.png}
+\caption{$W=8,T=4$：4 个块。}
+\end{subfigure}
+\caption{相同的 $8\times8$ 输出矩阵可以使用不同大小的输出分块；粗线表示块之间的边界。}
+\label{l5:fig:output-tiles}
+\end{figure}
+对这两个 $W=8$ 的整除例子，总线程数都是 64，每个线程仍计算一个输出元素。改变 $T$ 调整了线程分组，但基本 kernel 的每个有效线程仍然执行长度为 $W$ 的点积。
+
+\subsection{线程坐标如何确定输入与输出地址}
+
+\subsubsection{从块索引与块内索引得到行列}
+记块索引为 $(b_x,b_y)$，块内线程索引为 $(t_x,t_y)$，块尺寸为 $(B_x,B_y)$。它们分别对应 \code{blockIdx}、\code{threadIdx} 与 \code{blockDim} 的两个分量。线程负责的全局行、列为
+\begin{equation}
+\mathrm{Row}=b_yB_y+t_y,\qquad
+\mathrm{Col}=b_xB_x+t_x.
+\label{l5:eq:rowcol}
+\end{equation}
+$x$ 方向沿矩阵的列变化，$y$ 方向沿行变化。乘以块尺寸给出当前块的起点，再加上块内偏移，得到整个输出矩阵中的位置。
+
+当 $T=2$ 且 $(b_x,b_y)=(0,0)$ 时，该块负责行 $0,1$ 和列 $0,1$，四个线程与输出的对应关系如下。
+\begin{table}[H]
+\centering\small
+\begin{tabular}{cccc}
+\toprule
+$(t_x,t_y)$ & $\mathrm{Row}$ & $\mathrm{Col}$ & 负责的输出 \\
+\midrule
+$(0,0)$ & 0 & 0 & $P_{0,0}$ \\
+$(1,0)$ & 0 & 1 & $P_{0,1}$ \\
+$(0,1)$ & 1 & 0 & $P_{1,0}$ \\
+$(1,1)$ & 1 & 1 & $P_{1,1}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.40\textwidth]{p23_block00.png}
+\caption{左上角线程块中的四个线程读取 $M$ 的前两行与 $N$ 的前两列，各自形成一个完整点积。}
+\label{l5:fig:block00}
+\end{figure}
+
+向右相邻的块满足 $(b_x,b_y)=(1,0)$，其行仍为 $0,1$，列变为 $2,3$。CUDA 块坐标按 $(b_x,b_y)$ 排列，$b_x$ 表示水平方向，$b_y$ 表示垂直方向。
+
+\subsubsection{固定一个线程，追踪整个点积}
+取 $W=4$、$\mathrm{Row}=1$、$\mathrm{Col}=2$。线程最终写入 $P_{1,2}$，对应一维位置 $1\times4+2=6$。内层循环的四次访问为
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{L{0.07\textwidth} Y Y Y}
+\toprule
+$k$ & $M$ 的元素与偏移 & $N$ 的元素与偏移 & 对累加器的贡献 \\
+\midrule
+0 & $M_{1,0}$，偏移 4 & $N_{0,2}$，偏移 2 & $M_{1,0}N_{0,2}$ \\
+1 & $M_{1,1}$，偏移 5 & $N_{1,2}$，偏移 6 & $M_{1,1}N_{1,2}$ \\
+2 & $M_{1,2}$，偏移 6 & $N_{2,2}$，偏移 10 & $M_{1,2}N_{2,2}$ \\
+3 & $M_{1,3}$，偏移 7 & $N_{3,2}$，偏移 14 & $M_{1,3}N_{3,2}$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+沿 $k$ 增长时，$M$ 的地址每次增加 1，$N$ 的地址每次增加 $W$。这是一个线程内部沿一行和一列取数所产生的地址序列。每次读入两个元素并相乘累加，四次循环结束后，只需将累加器写入一次输出数组。
+
+\subsection{kernel、启动配置与边界保护}
+
+\subsubsection{完整的基本 kernel}
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={一个线程计算一个输出元素的基本矩阵乘法 kernel。}]
+__global__
+void MatrixMulKernel(float *d_M, float *d_N,
+                     float *d_P, int Width)
+{
+    int Row = blockIdx.y * blockDim.y + threadIdx.y;
+    int Col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if ((Row < Width) && (Col < Width)) {
+        float Pvalue = 0.0f;
+        for (int k = 0; k < Width; ++k) {
+            Pvalue += d_M[Row * Width + k]
+                    * d_N[k * Width + Col];
+        }
+        d_P[Row * Width + Col] = Pvalue;
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+\code{Row}、\code{Col}、\code{k} 与 \code{Pvalue} 均为线程自己的状态。\code{d_M}、\code{d_N} 和 \code{d_P} 指向设备数组，其中循环内两处下标访问读取全局数据，循环后的下标访问写回输出。\code{Pvalue} 在整个循环中保留累加结果，避免每做一次乘加就把部分和写回输出数组。
+
+\subsubsection{主机侧启动配置}
+\par\noindent\begin{minipage}{\linewidth}
+令 \code{TILE_WIDTH} 为预先定义的正整数常量，三个设备数组已经准备好，\code{Width} 为矩阵宽度。启动片段如下；\code{ceil} 对应向上取整，C++ 中可在包含 \code{<cmath>} 后使用 \code{std::ceil}。
+
+\begin{lstlisting}[caption={二维网格与二维线程块的启动片段。}]
+dim3 dimGrid(std::ceil((1.0 * Width) / TILE_WIDTH),
+             std::ceil((1.0 * Width) / TILE_WIDTH), 1);
+dim3 dimBlock(TILE_WIDTH, TILE_WIDTH, 1);
+
+MatrixMulKernel<<<dimGrid, dimBlock>>>(
+    d_M, d_N, d_P, Width);
+\end{lstlisting}
+\end{minipage}\par
+\code{1.0 * Width} 使除法在浮点数范围内进行，从而在向上取整前保留余数对应的小数部分。对正整数 $W,T$，同一数量也可用整数算术表达为
+\[
+\left\lceil\frac WT\right\rceil
+=\left\lfloor\frac{W+T-1}{T}\right\rfloor,
+\]
+因此可以用 \code{(Width + TILE_WIDTH - 1) / TILE_WIDTH} 计算每个方向的块数。两个表达式都表示“有余数时再增加一个块”。
+
+\subsubsection{向上取整后为什么需要边界判断}
+取 $W=5,T=2$，每个方向需要 $\lceil5/2\rceil=3$ 个块，共 9 个块、36 个线程。它们覆盖一个 $6\times6$ 的线程坐标区域，而有效输出只包含 $5\times5=25$ 个位置。因此，有 11 个线程对应超出矩阵边缘的坐标。
+
+\code{if ((Row < Width) && (Col < Width))} 同时检查行与列，使这些边缘线程跳过整个点积和输出写入。有效线程内部有 $0\le k<W$，因此 $M$ 的列索引与 $N$ 的行索引也位于范围内。
+
+任一有效位置 $(r,c)$ 都可以唯一分解为
+\[
+b_y=\lfloor r/T\rfloor,\quad t_y=r\bmod T,\qquad
+b_x=\lfloor c/T\rfloor,\quad t_x=c\bmod T.
+\]
+这说明向上取整的网格覆盖了所有有效输出，并且每个输出都被唯一一个线程负责。不同输出可以重复读取相同输入，但写入目标彼此不同。

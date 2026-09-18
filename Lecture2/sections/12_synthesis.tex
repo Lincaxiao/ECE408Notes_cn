@@ -1,0 +1,49 @@
+\section{综合框架与关键结论}
+
+数据并行 CUDA 程序的基本结构可以归纳为以下完整链条：
+\begin{enumerate}
+  \item 从数据依赖出发，定义每个线程的独立工作；
+  \item 用主机代码管理数据与调度，用设备核函数执行高并行计算；
+  \item 用网格-线程块-线程层次和 $i=bT+t$ 建立执行到数据的映射；
+  \item 用显式内存管理完成分配、传输、计算、回传与释放；
+  \item 用向上取整启动和边界检查覆盖任意长度输入；
+  \item 用 NVCC 编译主机与设备代码，并正确处理异步执行与错误状态；
+  \item 先验证正确性，再进行性能优化。
+\end{enumerate}
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=7mm and 7mm,
+  host/.style={draw=UIUCBlue,fill=SoftBlue,rounded corners,minimum height=9mm,
+               text width=2.35cm,align=center,font=\small\sffamily},
+  dev/.style={draw=UIUCOrange,fill=SoftOrange,rounded corners,minimum height=9mm,
+              text width=2.35cm,align=center,font=\small\sffamily},
+  flow/.style={-{Stealth[length=2.2mm]},thick,draw=Ink}
+]
+\node[host] (alloc) {分配设备内存\\allocate};
+\node[host,right=of alloc] (h2d) {复制输入\\host to device};
+\node[dev,right=of h2d] (kernel) {启动核函数\\kernel launch};
+\node[host,right=of kernel] (d2h) {取回结果\\device to host};
+\node[host,right=of d2h] (free) {释放资源\\free};
+\draw[flow] (alloc) -- (h2d);
+\draw[flow] (h2d) -- (kernel);
+\draw[flow] (kernel) -- (d2h);
+\draw[flow] (d2h) -- (free);
+\node[below=7mm of kernel,dev,text width=5.4cm] (threads)
+  {线程网格执行同一核函数；每个线程用 $i=bT+t$ 选择自己的数据。};
+\draw[flow] (kernel) -- (threads);
+\end{tikzpicture}
+\end{center}
+
+\begin{keybox}[title={关键公式}]
+\[
+i=\code{blockIdx.x}\cdot\code{blockDim.x}+\code{threadIdx.x},
+\qquad
+B=\frac{n+T-1}{T},
+\]
+\[
+\code{if (i<n)}\ \text{保护边界},
+\qquad
+\code{<<<B,T>>>}\ \text{依次表示线程块数与每块线程数}.
+\]
+\end{keybox}

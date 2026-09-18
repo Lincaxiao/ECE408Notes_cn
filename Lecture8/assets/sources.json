@@ -1,0 +1,62 @@
+{
+  "conv1d_p2": {
+    "source": "ece408-lecture8-convolution-vk-FL26.pdf",
+    "page": 8,
+    "crop_pdf_points": [
+      155,
+      306,
+      858,
+      514
+    ]
+  },
+  "conv2d_interior": {
+    "source": "ece408-lecture8-convolution-vk-FL26.pdf",
+    "page": 12,
+    "crop_pdf_points": [
+      267,
+      99,
+      835,
+      509
+    ]
+  },
+  "conv2d_boundary": {
+    "source": "ece408-lecture8-convolution-vk-FL26.pdf",
+    "page": 13,
+    "crop_pdf_points": [
+      230,
+      75,
+      850,
+      506
+    ]
+  },
+  "gpu_cache_hierarchy": {
+    "source": "ece408-lecture8-convolution-vk-FL26.pdf",
+    "page": 28,
+    "crop_pdf_points": [
+      48,
+      106,
+      946,
+      486
+    ]
+  },
+  "tiles_halos": {
+    "source": "ece408-lecture8-convolution-vk-FL26.pdf",
+    "page": 33,
+    "crop_pdf_points": [
+      150,
+      86,
+      855,
+      506
+    ]
+  },
+  "three_strategies": {
+    "source": "ece408-lecture8-convolution-vk-FL26.pdf",
+    "page": 40,
+    "crop_pdf_points": [
+      35,
+      84,
+      908,
+      502
+    ]
+  }
+}

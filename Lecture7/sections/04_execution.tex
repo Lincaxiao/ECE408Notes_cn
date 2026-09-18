@@ -1,0 +1,273 @@
+\section{线程粒度、指令调度与同步}
+\subsection{从细粒度线程到线程粗化}
+\subsubsection{细粒度划分与透明可扩展性}
+\term{细粒度线程划分}{fine-grain thread granularity}把尽可能小的可并行工作单元分给每个线程：向量加法中一个线程处理一个向量元素，RGB 转灰度或模糊操作中一个线程处理一个输出像素，矩阵乘法中一个线程处理一个输出元素。
+
+这种划分向硬件暴露尽可能多的线程。资源充足时，可以同时推进较多工作；线程数超过硬件当时能容纳的数量时，其余工作可由硬件以较低开销分批执行。未来设备具有更多资源时，同一工作划分还能直接提取更多并行性，这就是\term{透明可扩展性}{transparent scalability}。
+
+\paragraph{过细划分的代价}
+若把工作拆给更多线程会额外引入重复读取、重复计算或同步，这些开销会随着细粒度划分一起出现。只有一部分线程能同时执行时，程序可能已经承担了更多并行化开销，却仍需要等待多批工作依次完成。
+
+\subsubsection{一个线程承担多个工作单元}
+\term{线程粗化}{thread coarsening}把多个可并行工作单元交给同一线程。\term{粗化因子}{coarsening factor}表示每个线程负责的工作单元数。例如，粗化因子为 4 时，每个线程处理四个工作单元。
+
+\par\noindent\begin{minipage}{\linewidth}
+下列片段在 kernel 内使用，\code{foo(i)} 表示已经定义好的第 $i$ 个独立工作单元的处理函数。未粗化时，每个线程只调用一次：
+
+\begin{lstlisting}[caption={细粒度映射。}]
+unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+foo(i);
+\end{lstlisting}
+\end{minipage}\par
+
+\par\noindent\begin{minipage}{\linewidth}
+粗化之后，每个线程顺序处理四个单元：
+
+\begin{lstlisting}[caption={连续四单元分配给同一线程。有效下标范围在该概念片段中作为前提。}]
+unsigned int iStart =
+    4 * (blockIdx.x * blockDim.x + threadIdx.x);
+for (unsigned int c = 0; c < 4; ++c) {
+    unsigned int i = iStart + c;
+    foo(i);
+}
+\end{lstlisting}
+\end{minipage}\par
+
+粗化把一部分跨线程的工作关系改为线程内部的顺序关系，为复用数据或中间结果、减少重复工作和同步提供机会；具体收益取决于原来为并行化付出了什么开销。
+
+\subsection{粗化后的地址布局与资源代价}
+\subsubsection{连续分配给线程可能产生跨线程步长}
+设一个 warp 中相邻线程的全局编号为 $q_0+\ell$。在上面的连续四单元分配中，固定粗化循环下标 $c$ 后，第 $\ell$ 个 lane 的元素下标为
+\begin{equation}
+  i_{\ell,c}=4(q_0+\ell)+c,
+  \qquad i_{\ell+1,c}-i_{\ell,c}=4.
+\end{equation}
+若 \code{foo(i)} 访问数组第 $i$ 个 float，相邻 lane 相隔 4 个元素，即 $16\Bunit$。每个线程自己的四次访问相邻，但同一次循环迭代中，warp 的地址带有步长。
+
+\subsubsection{按线程块宽度跨步，保留每轮连续访问}
+\par\noindent\begin{minipage}{\linewidth}
+另一种映射让相邻线程在同一轮处理相邻元素，让同一线程在不同轮之间跨过一个线程块宽度。令 $B=\code{blockDim.x}$，代码为：
+
+\begin{lstlisting}[caption={保持每次迭代内 warp 连续访问的四倍粗化。}]
+unsigned int base =
+    blockIdx.x * (4 * blockDim.x) + threadIdx.x;
+#pragma unroll
+for (unsigned int c = 0; c < 4; ++c) {
+    unsigned int i = base + c * blockDim.x;
+    if (i < n) {
+        foo(i);
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+
+用 $b$ 表示线程块编号，$t$ 表示块内线程编号，则该映射为
+\begin{equation}
+  i(b,t,c)=4bB+t+cB,
+  \qquad 0\leq t<B,\quad 0\leq c<4.
+  \label{l7:eq:coarse-map}
+\end{equation}
+固定 $b,c$，相邻线程的下标差为 1；固定 $b,t$，同一线程下一轮的下标增加 $B$。一个块覆盖从 $4bB$ 到 $4(b+1)B-1$ 的连续 $4B$ 个位置。
+
+例如取 $b=0,B=32$，一个 warp 的映射如下。表中的数字为\textbf{元素下标}：
+\begin{table}[H]
+  \centering\small
+  \caption{四轮粗化中的线程分工，由式\eqref{l7:eq:coarse-map}计算。}
+  \begin{tabular}{@{}ccccc@{}}
+  \toprule
+  循环下标 $c$ & lane 0 & lane 1 & lane 2 & lane 31\\
+  \midrule
+  0 & 0 & 1 & 2 & 31\\
+  1 & 32 & 33 & 34 & 63\\
+  2 & 64 & 65 & 66 & 95\\
+  3 & 96 & 97 & 98 & 127\\
+  \bottomrule
+  \end{tabular}
+\end{table}
+
+因此，对 $n$ 个工作单元，线程块数量应相应改成
+\begin{equation}
+  G=\left\lceil\frac{n}{4B}\right\rceil.
+\end{equation}
+最后一个块中，\code{i<n} 使超过数组长度的位置不执行处理。
+
+\subsubsection{粗化因子与占用率一起选择}
+粗化可能减少冗余内存访问、冗余计算、同步开销或控制分歧；同时，一个线程也可能需要更多寄存器或其他资源，进而降低占用率。粗化因子过大，还会使可并发线程过少而无法充分利用设备。
+
+相同的粗化因子在不同设备上可能表现不同，因此需要重新调节。影响性能的关系包括：每线程增加了多少有效工作、减少了多少重复开销、每线程资源增加多少，以及仍有多少独立线程或指令可以隐藏延迟。
+
+\begin{keybox}[title={粗化的两个联合检查}]
+一方面检查工作分配：每轮相邻 lane 是否仍访问相邻元素，网格是否覆盖全部工作；另一方面检查资源代价：增加的线程内工作是否值得以更少的驻留线程来交换。
+\end{keybox}
+\FloatBarrier
+
+\subsection{循环展开、指令调度与寄存器使用}
+\subsubsection{展开循环体，减少循环控制}
+\term{循环展开}{loop unrolling}把循环体复制若干次，同时按相同倍数减少循环迭代次数。循环体执行的总工作量保持一致，循环计数、判断和跳转出现的次数则减少。
+
+\par\noindent\begin{minipage}{\linewidth}
+设 \code{A(i)}、\code{B(i)} 是已定义的操作，原循环为：
+
+\begin{lstlisting}[caption={原始循环执行16次，每次处理一个下标。}]
+for (unsigned int i = 0; i < 16; ++i) {
+    A(i);
+    B(i);
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\par\noindent\begin{minipage}{\linewidth}
+按因子 4 展开之后，每次循环处理四个下标，外层循环只执行 4 次：
+
+\begin{lstlisting}[caption={按因子 4 展开的循环。}]
+for (unsigned int i = 0; i < 16; i += 4) {
+    A(i);     B(i);
+    A(i + 1); B(i + 1);
+    A(i + 2); B(i + 2);
+    A(i + 3); B(i + 3);
+}
+\end{lstlisting}
+\end{minipage}\par
+
+循环展开减少停顿的两条路径是：减少循环分支，以及暴露更多独立指令供后续调度。当缺少分支预测、循环分支具有较长延迟时，减少分支也能减少相应等待。
+
+\subsubsection{拉开依赖指令之间的距离}
+\term{指令调度}{instruction scheduling}在保持程序依赖关系的条件下重排指令，把相互依赖的指令隔得更远，从而让中间穿插的独立指令填补等待时间。
+
+\par\noindent\begin{minipage}{\linewidth}
+示例明确假设：\code{B(i)} 依赖 \code{A(i)}，而不同 $i$ 之间没有冲突依赖或副作用。也就是每个下标内部存在 $A(i)\rightarrow B(i)$，不同下标的操作链相互独立。于是展开后的指令可以排列为：
+
+\begin{lstlisting}[caption={在各迭代独立的前提下先安排 A，再安排依赖它们的 B。}]
+for (unsigned int i = 0; i < 16; i += 4) {
+    A(i);
+    A(i + 1);
+    A(i + 2);
+    A(i + 3);
+    B(i);
+    B(i + 1);
+    B(i + 2);
+    B(i + 3);
+}
+\end{lstlisting}
+\end{minipage}\par
+
+这样，\code{A(i)} 与 \code{B(i)} 之间插入了另外三个独立的 \code{A} 操作。循环展开扩大了可见的指令序列，指令调度再利用其中的独立性。这种单个线程内部可利用的指令并行性称为\term{指令级并行}{instruction-level parallelism, ILP}。
+
+若不同迭代之间存在必须保留的依赖，能够重排的范围就由这些依赖限定。例如，示意中的调度依赖于“不同迭代没有冲突”这一明确假设。
+
+\subsubsection{编译器指令与编译期常量}
+\par\noindent\begin{minipage}{\linewidth}
+循环展开和指令调度通常由编译器自动完成，也可以使用指令控制展开。例如，使用 \code{#pragma unroll 4}：
+
+\begin{lstlisting}[caption={使用编译器指令指定展开因子。}]
+#pragma unroll 4
+for (unsigned int i = 0; i < 16; ++i) {
+    A(i);
+    B(i);
+}
+\end{lstlisting}
+\end{minipage}\par
+
+固定循环范围有利于编译器识别迭代次数。线程粗化常会引入这种短循环；粗化因子为编译期常量时，粗化循环可以完全展开。
+
+\subsubsection{常量下标使局部数组更容易提升为寄存器}
+\par\noindent\begin{minipage}{\linewidth}
+粗化之后，一个线程可能用小数组保存多个工作单元的状态。例如，从一个标量变为四个元素：
+
+\begin{lstlisting}[caption={具有变量下标的线程局部数组。}]
+int x[4] = {0, 0, 0, 0};
+for (unsigned int c = 0; c < 4; ++c) {
+    foo(x[c]);
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\par\noindent\begin{minipage}{\linewidth}
+完全展开后，各次访问的下标成为常量：
+
+\begin{lstlisting}[caption={展开后各次访问具有固定下标。}]
+int x[4] = {0, 0, 0, 0};
+foo(x[0]);
+foo(x[1]);
+foo(x[2]);
+foo(x[3]);
+\end{lstlisting}
+\end{minipage}\par
+
+固定下标使每个数组元素可分别对应一个寄存器值，从而提供\term{寄存器提升}{register promotion}的机会。变量下标可能使数组需要可寻址的存储，常量下标则便于编译器把各元素分别分配到寄存器；实际分配取决于编译器优化和资源限制。
+
+\paragraph{三种变换的关系}
+线程粗化改变“一个线程负责多少工作”；循环展开改变“同一线程怎样表达这些工作”；指令调度改变“在依赖允许范围内，先执行哪条指令”。三者可以结合，以减少重复开销、循环控制和依赖等待，同时仍需考虑增加的寄存器需求。
+
+\subsection{双缓冲与同步依赖}
+\subsubsection{单缓冲为何需要两次屏障}
+\term{双缓冲}{double buffering}用一个缓冲区读取当前数据，用另一个缓冲区写入新数据，消除因共享同一存储位置而产生的\term{假依赖}{false dependence}。
+
+\par\noindent\begin{minipage}{\linewidth}
+设一个线程块内的线程编号为 \code{tid}，\code{other} 是该线程要读取的有效块内下标。每轮从其他线程对应的旧状态取得数据，再更新自己的状态。用已定义函数 \code{updateValue} 表示状态更新，单缓冲循环可写为：
+
+\begin{lstlisting}[caption={单缓冲迭代：读完旧值后才能覆盖，写完新值后下一轮才能读取。}]
+for (int j = 0; j < steps; ++j) {
+    float next = updateValue(buffer[other]);
+    __syncthreads();
+    buffer[tid] = next;
+    __syncthreads();
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\paragraph{第一次屏障：保护尚未完成的旧值读取}
+一些线程可能已经读完并准备写入，而另一些线程仍在读取旧数据。第一次 \code{__syncthreads()} 要求整个块先完成旧值读取，随后再覆盖同一数组。它保护的是\term{写后于读}{write-after-read, WAR}的顺序。这个约束源于读写复用了同一存储位置，因此属于假依赖。
+
+\paragraph{第二次屏障：确保下一轮读到已完成的新值}
+下一轮需要使用本轮其他线程产生的新数据，所以所有写入都要完成，线程才能进入下一轮读取。这个\term{读后于写}{read-after-write, RAW}的关系来自计算的数据流，属于\term{真依赖}{true dependence}。
+
+假依赖仍决定单缓冲实现的正确性。改变存储安排、让旧值与新值分别保存之后，才具备移除第一道屏障的条件。
+
+\subsubsection{两个缓冲区交替承担输入与输出}
+\par\noindent\begin{minipage}{\linewidth}
+假设 \code{buffer0}、\code{buffer1} 是两个大小相同、彼此分离的块内共享缓冲区，初始状态已放入 \code{buffer0}，并已完成必要的初始化同步。所有参与线程执行相同轮数。上述初始化前提用于明确执行语义，指针交换在代码中显式展开。
+
+\begin{lstlisting}[caption={双缓冲迭代：只保留每轮末尾的屏障。两个指针交换输入与输出缓冲区的角色。}]
+float* inBuffer = buffer0;
+float* outBuffer = buffer1;
+for (int j = 0; j < steps; ++j) {
+    float next = updateValue(inBuffer[other]);
+    outBuffer[tid] = next;
+    __syncthreads();
+
+    float* tmp = inBuffer;
+    inBuffer = outBuffer;
+    outBuffer = tmp;
+}
+\end{lstlisting}
+\end{minipage}\par
+
+读取 \code{inBuffer} 时，其他线程写入的是 \code{outBuffer}，因此写入新数据不会覆盖本轮仍需读取的旧值。每轮结束的屏障仍然保留，确保所有新数据都已完成写入。交换两个指针后，刚写好的数组成为下一轮输入，原输入数组成为下一轮输出。
+
+\begin{table}[H]
+  \centering\small
+  \caption{双缓冲的角色随迭代交替，由指针交换代码直接得到。}
+  \begin{tabular}{@{}cccc@{}}
+  \toprule
+  迭代编号 & 读取旧状态 & 写入新状态 & 交换后的输入指针\\
+  \midrule
+  $j=0$ & \code{buffer0} & \code{buffer1} & 指向 \code{buffer1}\\
+  $j=1$ & \code{buffer1} & \code{buffer0} & 指向 \code{buffer0}\\
+  $j=2$ & \code{buffer0} & \code{buffer1} & 指向 \code{buffer1}\\
+  \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{循环状态的检查}
+每次交换之后，\code{inBuffer} 都指向最新结果，\code{outBuffer} 指向可供下一轮覆盖的旧缓冲区。交换只改变指针代表的角色，不搬运数组内容。最后一轮也完成交换，因此循环退出后的最新状态仍由 \code{inBuffer} 指向。以上结论直接来自代码中的赋值顺序。
+
+\subsubsection{减少屏障与增加存储之间的交换}
+按上述两个循环计数，执行 $J=\code{steps}$ 轮时，单缓冲的循环内屏障调用次数为 $2J$，双缓冲为 $J$；初始化同步不计入这项比较。减少的是用于约束旧值读取与覆盖写入的那一道屏障。
+
+若一个缓冲区占用 $S$ 字节，两块缓冲区需要 $2S$ 字节。在共享内存中实现时，增加的每块存储需求还要与占用率一起考虑。同步开销在总时间中所占比例，以及额外存储对并行执行的影响，共同决定实际收益。
+
+\begin{keybox}[title={双缓冲保留的数据依赖}]
+旧状态与新状态分别存储，使本轮读取和本轮写入可以不经中间屏障直接衔接；本轮写入与下一轮读取之间仍有真依赖，所以每轮末尾的屏障保留。
+\end{keybox}
+\FloatBarrier

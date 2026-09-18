@@ -1,0 +1,71 @@
+\section{线程层次结构与一维索引映射}
+
+\subsection{网格、线程块与线程}
+
+一次核函数启动创建一个\term{网格}{grid}。网格由若干\term{线程块}{thread block}组成，每个线程块再由若干\term{线程}{thread}组成。对于一维网格：
+
+\begin{itemize}
+  \item \code{gridDim.x}：网格在 $x$ 方向包含的线程块数；
+  \item \code{blockIdx.x}：当前线程块在网格中的索引；
+  \item \code{blockDim.x}：每个线程块在 $x$ 方向包含的线程数；
+  \item \code{threadIdx.x}：当前线程在线程块内部的索引。
+\end{itemize}
+
+\slidefig{0.94}{page-09.png}{线程块内部可进行较强合作，不同线程块之间的合作更受限制}
+
+同一线程块内的线程可通过共享内存、原子操作与屏障同步进行局部合作。不同线程块必须能够以任意顺序调度，因此各线程块通常应设计为彼此独立。这个限制换来了\term{可扩展性}{scalability}：同一核函数可以在执行资源不同的 GPU 上运行，而无需把线程块绑定到特定硬件位置。
+
+\subsection{全局线程索引的推导}
+
+设每个线程块有 $T=\code{blockDim.x}$ 个线程，当前线程块索引为
+\[
+b=\code{blockIdx.x},
+\]
+线程在线程块内的局部索引为
+\[
+t=\code{threadIdx.x}.
+\]
+在当前线程块之前共有 $b$ 个完整线程块，每个线程块贡献 $T$ 个线程，所以当前线程块之前一共有 $bT$ 个线程。把局部偏移 $t$ 加上去，得到全局一维索引
+\[
+\boxed{i=bT+t}
+\]
+\par\noindent\begin{minipage}{\linewidth}
+即
+\begin{lstlisting}[style=cuda,numbers=none]
+int i = blockIdx.x * blockDim.x + threadIdx.x;
+\end{lstlisting}
+\end{minipage}\par
+
+\subsubsection{覆盖范围证明}
+
+对固定的线程块 $b$，局部索引满足 $0\le t<T$，因此该线程块产生的全局索引范围是
+\[
+bT\le i\le bT+T-1.
+\]
+相邻线程块 $b+1$ 的起始索引为
+\[
+(b+1)T=bT+T,
+\]
+恰好接在前一线程块的末尾之后。因此所有线程块共同形成连续、不重叠的一维索引区间。
+
+\begin{examplebox}[title={例：线程块大小为 256}]
+若 $T=256$：
+\begin{align*}
+\text{线程块 }0 &: i=0,1,\ldots,255,\\
+\text{线程块 }1 &: i=256,257,\ldots,511,\\
+\text{线程块 }3\text{中的线程 }0 &: i=3\times256+0=768.
+\end{align*}
+由此得到的全局索引与图示中的线程分配一致。
+\end{examplebox}
+
+\subsection{线程索引是“数据归属规则”}
+
+索引公式本身只是编号。真正的并行设计问题是：\textbf{编号为 $i$ 的线程应该负责哪一块数据？} 对一维向量加法，最自然的规则是线程 $i$ 负责元素 $i$。对二维图像、卷积、归约或扫描，线程到数据的映射会更复杂，但方法相同：先定义工作单元，再用内置索引计算该工作单元的位置。
+
+\begin{keybox}[title={关键结论}]
+给定 $B$ 个线程块、每块 $T$ 个线程：
+\[
+\text{启动线程总数}=BT.
+\]
+每个线程拥有自己的自动局部变量副本；因此若核函数中声明一个局部变量 \code{i}，整个网格生命周期中最多会为 $BT$ 个线程各产生一个逻辑副本。
+\end{keybox}

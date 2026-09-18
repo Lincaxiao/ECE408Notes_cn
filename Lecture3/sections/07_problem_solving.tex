@@ -1,0 +1,174 @@
+\section{例题与完整推导}
+
+\subsection{统一计算框架}
+
+对三维网格尺寸
+\[
+(G_x,G_y,G_z)
+\]
+与三维块尺寸
+\[
+(B_x,B_y,B_z),
+\]
+依次计算
+\[
+\begin{aligned}
+N_{\mathrm{threads/block}} &= B_xB_yB_z,\\
+N_{\mathrm{blocks}} &= G_xG_yG_z,\\
+N_{\mathrm{threads,total}} &=
+N_{\mathrm{threads/block}}N_{\mathrm{blocks}}.
+\end{aligned}
+\]
+未使用的维度取 1，不能把它们从概念上混成 0；尺寸为 0 会意味着不启动相应工作，而一维或二维配置的剩余维度实际为 1。
+
+\subsection{例题一：一维网格与二维线程块}
+
+\begin{examplebox}[title=题目]
+一个 CUDA 核函数启动 32 个线程块，每个线程块包含 $32\times32$ 个线程。求每块线程数与总启动线程数。
+\end{examplebox}
+
+网格可写为
+\[
+\texttt{gridDim}=(32,1,1),
+\]
+线程块可写为
+\[
+\texttt{blockDim}=(32,32,1).
+\]
+因此每块线程数为
+\[
+N_{\mathrm{threads/block}}
+=32\times32\times1
+=1024.
+\]
+网格中的块数为
+\[
+N_{\mathrm{blocks}}
+=32\times1\times1
+=32.
+\]
+总线程数为
+\[
+N_{\mathrm{threads,total}}
+=1024\times32
+=32768.
+\]
+
+\begin{keybox}[title=答案]
+每个线程块包含 $1024$ 个线程；整个网格共启动 $32768$ 个线程。
+\end{keybox}
+
+\subsection{例题二：二维网格与二维线程块}
+
+\begin{examplebox}[title=题目]
+线程块配置为 $16\times16$，网格尺寸为 $32\times16$ 个块。求每块线程数、块总数与整个网格的线程总数。
+\end{examplebox}
+
+对应尺寸为
+\[
+\texttt{blockDim}=(16,16,1),
+\qquad
+\texttt{gridDim}=(32,16,1).
+\]
+每块线程数为
+\[
+N_{\mathrm{threads/block}}
+=16\times16\times1
+=256.
+\]
+块总数为
+\[
+N_{\mathrm{blocks}}
+=32\times16\times1
+=512.
+\]
+因此总线程数为
+\[
+N_{\mathrm{threads,total}}
+=256\times512
+=131072.
+\]
+也可一次性验证：
+\[
+(32\times16)\times(16\times16)=131072.
+\]
+
+\begin{keybox}[title=答案]
+每块包含 $256$ 个线程；网格含 $512$ 个块；整个网格共启动 $131072$ 个线程。
+\end{keybox}
+
+\subsection{例题三：三维网格与三维线程块}
+
+\begin{examplebox}[title=题目]
+网格尺寸为 $8\times4\times2$ 个块，每个线程块尺寸为 $4\times8\times8$。求每块线程数与整个网格的线程总数。
+\end{examplebox}
+
+每块线程数为
+\[
+N_{\mathrm{threads/block}}
+=4\times8\times8
+=256.
+\]
+网格中的块数为
+\[
+N_{\mathrm{blocks}}
+=8\times4\times2
+=64.
+\]
+总线程数为
+\[
+N_{\mathrm{threads,total}}
+=256\times64
+=16384.
+\]
+
+\begin{keybox}[title=答案]
+每块包含 $256$ 个线程；网格含 $64$ 个块；整个网格共启动 $16384$ 个线程。
+\end{keybox}
+
+\subsection{综合例题：最后一个有效像素与第一个无效线程}
+
+考虑 $76\times62$ 图像，块尺寸为 $16\times16$，因此
+\[
+\texttt{gridDim}=(5,4,1).
+\]
+图像最后一个有效像素坐标为
+\[
+(r,c)=(61,75).
+\]
+取最后一个线程块
+\[
+\texttt{blockIdx}=(4,3),
+\]
+并取块内线程
+\[
+\texttt{threadIdx}=(11,13).
+\]
+其坐标为
+\[
+\begin{aligned}
+c&=4\times16+11=75,\\
+r&=3\times16+13=61.
+\end{aligned}
+\]
+因此该线程恰好负责最后一个有效像素，线性下标为
+\[
+p=61\times76+75=4711,
+\]
+与长度 $76\times62=4712$ 的数组最后下标一致。
+
+若只把块内 $x$ 坐标增加 1，即取 \texttt{threadIdx.x}=12，则
+\[
+c=4\times16+12=76.
+\]
+此时 $c<76$ 不成立，该线程是最靠近右边界的无效线程之一。这个例子说明，线程的块内索引本身完全合法，并不意味着它对应的数据坐标合法；数据边界必须单独判断。
+
+\subsection{常见计算错误}
+
+\begin{itemize}
+  \item 把“网格中的块数”与“每块线程数”混为同一个量；
+  \item 只乘二维图中显式写出的分量，却忘记未使用维度应乘以 1；
+  \item 把 \texttt{gridDim} 当成线程总数，或把 \texttt{blockDim} 当成块总数；
+  \item 认为启动线程总数必然等于有效数据元素数，忽略向上取整产生的边界线程；
+  \item 在二维索引中把 $x$ 当作行、$y$ 当作列，导致宽度与高度的判断互换。
+\end{itemize}

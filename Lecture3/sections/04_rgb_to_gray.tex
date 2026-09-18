@@ -1,0 +1,128 @@
+\section{实例一：RGB 彩色图像转灰度}
+
+\subsection{数据并行分解}
+
+红绿蓝 (red-green-blue, RGB) 图像的每个像素包含三个颜色分量。三个独立的一维数组 \texttt{red}、\texttt{green} 和 \texttt{blue} 分别保存三个输入分量，数组 \texttt{gray} 保存灰度输出。四个数组的长度均为 $WH$，其中 $W$ 为图像宽度，$H$ 为图像高度。
+
+每个输出像素只依赖同一位置的三个颜色分量，不依赖其他像素。因此可把输出空间直接作为并行工作空间：
+\[
+\boxed{\text{一个线程} \longleftrightarrow \text{一个输出像素}}.
+\]
+线程在二维网格中先求自己负责的 $(r,c)$，再用 $p=rW+c$ 访问三个输入通道并写入一个输出值。
+
+设某像素的红、绿、蓝分量分别为 $R_p,G_p,B_p$，灰度计算为
+\[
+\boxed{
+Y_p=\frac{3}{10}R_p+\frac{6}{10}G_p+\frac{1}{10}B_p
+}.
+\]
+三个系数之和为 1，因此当三个输入均位于 $[0,255]$ 时，浮点中间结果也位于该区间内。
+
+\begin{examplebox}[title=单个像素的灰度计算]
+若某像素满足
+\[
+R_p=100,\qquad G_p=150,\qquad B_p=200,
+\]
+则
+\[
+Y_p=0.3\times100+0.6\times150+0.1\times200
+=30+90+20=140.
+\]
+该像素的三个输入值由一个线程读取，结果 140 由同一线程写入对应的灰度位置。
+\end{examplebox}
+
+\subsection{完整核函数}
+
+核函数使用三个独立通道数组与上述权重。线性下标 \texttt{pix} 在边界判断通过后计算，使边界保护与内存访问的对应关系更直接。
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={带二维边界保护的 RGB 转灰度核函数}]
+__global__
+void rgb2gray_kernel(unsigned char* red,
+                     unsigned char* green,
+                     unsigned char* blue,
+                     unsigned char* gray,
+                     unsigned int width,
+                     unsigned int height)
+{
+    unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
+    unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < height && col < width) {
+        unsigned int pix = row * width + col;
+
+        gray[pix] = red[pix]   * 3.0f / 10.0f
+                  + green[pix] * 6.0f / 10.0f
+                  + blue[pix]  * 1.0f / 10.0f;
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+
+后缀 \texttt{f} 表示单精度浮点字面量。乘加表达式先产生浮点中间结果，再在赋给 \texttt{unsigned char} 时转换为字节值。源实现未加入额外舍入步骤，因此若结果带小数部分，赋值转换会去除其小数部分。
+
+\subsection{启动配置}
+
+采用 $16\times16$ 线程块时，二维启动配置可写为
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={RGB 转灰度核函数的二维启动配置}]
+dim3 threadsPerBlock(16, 16);
+dim3 numBlocks(
+    (width  + threadsPerBlock.x - 1) / threadsPerBlock.x,
+    (height + threadsPerBlock.y - 1) / threadsPerBlock.y);
+
+rgb2gray_kernel<<<numBlocks, threadsPerBlock>>>(
+    red, green, blue, gray, width, height);
+\end{lstlisting}
+\end{minipage}\par
+
+该配置创建的矩形线程区域至少覆盖整个图像。右边界与下边界多出的线程仍会执行到条件判断，但不会读取或写入任何像素。
+
+\subsection{一次线程索引的完整追踪}
+
+考虑宽 $W=76$、高 $H=62$ 的图像，块尺寸为 $16\times16$。某线程满足
+\[
+\texttt{blockIdx}=(3,2),
+\qquad
+\texttt{threadIdx}=(5,7).
+\]
+其全局列、行坐标分别为
+\[
+\begin{aligned}
+c&=3\times16+5=53,\\
+r&=2\times16+7=39.
+\end{aligned}
+\]
+因为 $53<76$ 且 $39<62$，该线程对应有效像素。线性下标为
+\[
+p=39\times76+53=3017.
+\]
+于是该线程读取
+\[
+\texttt{red[3017]},\quad
+\texttt{green[3017]},\quad
+\texttt{blue[3017]},
+\]
+并写入 \texttt{gray[3017]}。
+
+若同一块中的线程改为 \texttt{threadIdx.y}=15，则行坐标变为
+\[
+r=2\times16+15=47,
+\]
+仍然有效；而位于最后一行块中的部分线程会得到 $r\geq62$，这些线程由外层条件排除。
+
+\begin{keybox}
+该实例包含一条完整的二维逐元素模式：
+\[
+\begin{aligned}
+&\text{二维线程坐标}\\
+&\quad\Downarrow\\
+&\text{像素行列坐标 }(r,c)\\
+&\quad\Downarrow\\
+&\text{线性下标 }p=rW+c\\
+&\quad\Downarrow\\
+&\text{三个输入读取与一个输出写入}.
+\end{aligned}
+\]
+所有四次内存访问共享同一个有效性条件 $r<H\land c<W$。
+\end{keybox}

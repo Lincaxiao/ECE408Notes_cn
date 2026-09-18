@@ -1,0 +1,83 @@
+{
+  "dram_bank": {
+    "source_page": 10,
+    "crop_pt": [
+      425,
+      132,
+      935,
+      480
+    ]
+  },
+  "dram_select_010": {
+    "source_page": 14,
+    "crop_pt": [
+      322,
+      183,
+      720,
+      485
+    ]
+  },
+  "dram_select_011": {
+    "source_page": 15,
+    "crop_pt": [
+      322,
+      165,
+      915,
+      488
+    ]
+  },
+  "dram_multibank": {
+    "source_page": 27,
+    "crop_pt": [
+      75,
+      115,
+      900,
+      450
+    ]
+  },
+  "dram_bank_timing": {
+    "source_page": 28,
+    "crop_pt": [
+      75,
+      225,
+      680,
+      328
+    ]
+  },
+  "row_major": {
+    "source_page": 19,
+    "crop_pt": [
+      170,
+      148,
+      785,
+      432
+    ]
+  },
+  "matmul_N_pattern": {
+    "source_page": 21,
+    "crop_pt": [
+      187,
+      115,
+      795,
+      490
+    ]
+  },
+  "matmul_M_pattern": {
+    "source_page": 22,
+    "crop_pt": [
+      166,
+      88,
+      805,
+      490
+    ]
+  },
+  "matmul_tiling": {
+    "source_page": 24,
+    "crop_pt": [
+      180,
+      109,
+      800,
+      491
+    ]
+  }
+}

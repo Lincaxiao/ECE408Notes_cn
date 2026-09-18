@@ -1,0 +1,86 @@
+\Needspace{9\baselineskip}
+\section{共享内存接口与分块思想的推广}
+
+\subsection{动态共享内存}
+\subsubsection{将容量配置推迟到核函数启动时}
+\par\noindent\begin{minipage}{\linewidth}
+静态共享数组的大小写在声明中，例如 \code{A_s[TILE_DIM][TILE_DIM]}。当所需容量需要在启动时确定，可以使用\term{动态共享内存}{dynamic shared memory}：
+
+\begin{lstlisting}[numbers=none]
+extern __shared__ float A_s[];
+\end{lstlisting}
+\end{minipage}\par
+核函数启动配置的第三个参数 \code{smemPerBlock} 指定每个线程块申请的动态共享内存字节数。配置形式为 \code{<<<nBlocks, nThreadsPerBlock, smemPerBlock>>>}。该容量按线程块分别提供，单位是字节。
+
+\subsubsection{将一段共享区域划分为两个输入块}
+\par\noindent\begin{minipage}{\linewidth}
+以下局部片段用于把动态共享内存接口连接到两个输入块的存储需求。设运行时的分块边长为 $T$，可以在核函数内部声明一段共享区域，再把它分成前后两段：
+
+\begin{lstlisting}[numbers=none]
+extern __shared__ float shared[];
+float* A_s = shared;
+float* B_s = shared + T * T;
+\end{lstlisting}
+\end{minipage}\par
+\par\noindent\begin{minipage}{\linewidth}
+两个输入块各占 $T^2$ 个 \code{float}。采用一维共享指针后，局部位置 $(t_y,t_x)$ 使用偏移 $t_yT+t_x$；计算时的两个偏移分别为 $t_yT+k$ 和 $kT+t_x$。对应的主机端容量计算为：
+
+\begin{lstlisting}[numbers=none]
+size_t smemPerBlock = 2 * T * T * sizeof(float);
+\end{lstlisting}
+\end{minipage}\par
+分区方式只改变共享数组的表示和容量配置；协作加载、两次同步、零填充和输出写回的职责保持相同。该局部片段为存储布局说明，完整矩阵乘法实现采用代码~\ref{l6:lst:rect} 的静态共享数组版本。
+
+\subsection{Hopper 的相关功能}
+\subsubsection{分布式共享内存}
+\term{分布式共享内存}{distributed shared memory} 允许同一\term{线程块集群}{thread block cluster} 内的线程块访问彼此的共享内存。它从 Hopper 架构开始提供，将访问范围扩展到集群中的线程块。前面的基本分块核函数使用各线程块自己的共享数组。
+
+\subsubsection{张量内存加速器}
+\term{张量内存加速器}{Tensor Memory Accelerator, TMA} 支持全局内存与共享内存之间的数据异步传输。它可用于分块算法的输入搬运阶段。
+
+\subsection{CPU 缓存分块}
+\subsubsection{相同的局部性，不同的存储管理方式}
+CPU 上也可以通过分块重排计算顺序。\term{缓存分块}{cache blocking} 使一小组数据在较短的执行区间内被反复使用，从而建立\term{时间局部性}{temporal locality}，提高数据仍在缓存中时被再次访问的机会。
+
+GPU 基本实现由程序把输入块显式放入共享内存，并通过线程块同步协调使用；CPU 示例依靠缓存复用，通过循环顺序集中对当前分块的访问。二者都将计算组织为“小块数据，多次使用”。
+
+\subsubsection{三层分块循环与三层元素循环}
+\par\noindent\begin{minipage}{\linewidth}
+CPU 示例对输出行、输出列和内积方向分别划分分块。外层三重循环选择输出块与当前输入块，内层三重循环计算该输入块对输出块的贡献。代码~\ref{l6:lst:cpu} 是该循环结构的函数实现；假设 $N>0$、$T>0$，且 $T$ 整除 $N$。
+
+\begin{lstlisting}[caption={CPU 缓存分块矩阵乘法，保持每个内积块的部分和累加顺序。},label={l6:lst:cpu}]
+void matmul_cpu_tiled(
+    const float* A, const float* B, float* C, int N, int T)
+{
+    for (int rt = 0; rt < N / T; ++rt) {
+        for (int ct = 0; ct < N / T; ++ct) {
+            for (int qt = 0; qt < N / T; ++qt) {
+                for (int row = rt * T;
+                     row < (rt + 1) * T; ++row) {
+                    for (int col = ct * T;
+                         col < (ct + 1) * T; ++col) {
+                        float sum = 0.0f;
+                        for (int j = qt * T;
+                             j < (qt + 1) * T; ++j) {
+                            sum += A[row * N + j]
+                                 * B[j * N + col];
+                        }
+                        if (qt == 0) {
+                            C[row * N + col] = sum;
+                        } else {
+                            C[row * N + col] += sum;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\subsubsection{初始化与部分和的归属}
+对于固定的 $C_{r,c}$，每个内积块产生一个新的局部变量 \code{sum}。第一块通过赋值初始化 $C_{r,c}$，后续块通过 \code{+=} 累加。因此，初始的 $C$ 数组内容无需参与计算。
+
+GPU 基本核函数把一个输出的 \code{sum} 保持在线程寄存器中，跨越全部输入分块，最后统一写回；这里的 CPU 循环先计算当前内积块对整个输出块的贡献，跨内积块的部分和保存在 $C$ 中。两种写法都实现式~\eqref{l6:eq:tile-sum}，但部分和保留的位置与循环组织不同。
+\FloatBarrier

@@ -1,0 +1,63 @@
+\section{从线程到大规模数据并行}
+
+\subsection{线程是计算的基本单位}
+
+\term{线程}{thread}是一条正在执行的顺序计算。线程包含程序或指令序列、指出当前执行位置的\term{程序计数器}{program counter, PC}，以及执行上下文（context），例如内存状态与寄存器状态。单个线程内部仍按顺序执行；并行性来自许多线程在硬件上同时推进。
+
+\begin{keybox}[title={线程的最小心智模型}]
+设线程 $T$ 的状态写成
+\[
+T = (P,\, PC,\, R,\, M_{\mathrm{visible}}),
+\]
+其中 $P$ 是程序，$PC$ 是下一条待执行指令的位置，$R$ 表示该线程可见的寄存器状态，$M_{\mathrm{visible}}$ 表示该线程可以访问的内存状态。CUDA 中同一\term{核函数}{kernel}产生的线程执行相同程序 $P$，但它们看到的线程索引不同，因此访问的数据位置不同。
+\end{keybox}
+
+\subsection{“多个线程”与“海量线程”}
+
+传统多核 CPU 往往运行数量相对有限、行为较复杂的线程；GPU 的设计目标则是让数量极大的线程并发执行。当线程数量达到成千上万甚至更多时，任意而频繁的线程间通信会迅速造成等待与串行化。因此，最容易映射到 GPU 的工作负载通常具备以下特征：
+
+\begin{itemize}
+  \item 线程之间的依赖很少；
+  \item 每个线程能够独立确定自己的输入与输出；
+  \item 大量线程执行相同或相近的计算；
+  \item 线程之间即使合作，也尽量限制在较小的局部范围内，例如同一线程块。
+\end{itemize}
+
+CUDA 线程仍可通过\term{共享内存}{shared memory}、\term{原子操作}{atomic operation}与\term{屏障同步}{barrier synchronization}进行合作。设计并行程序时，应\textbf{先寻找独立工作，再加入必要合作。}
+
+\subsection{任务并行与数据并行}
+
+\term{任务并行}{task parallelism}把不同操作分配给不同执行单元；\term{数据并行}{data parallelism}则让大量执行单元在不同数据上执行相同操作。GPU 最擅长后者，因为大型数据集常能释放出极高的并行度。
+
+\slidefig{0.94}{page-05.png}{任务并行（task parallelism）与数据并行（data parallelism）的对比}
+
+可用一个统一的数学形式描述数据并行。设输入数据为
+\[
+X = \{x_0,x_1,\ldots,x_{n-1}\},
+\]
+每个输出元素由同一个函数 $f$ 产生：
+\[
+y_i=f(x_i),\qquad 0\le i<n.
+\]
+若 $y_i$ 的计算不依赖尚未生成的 $y_j$，也不修改其他线程负责的输出位置，则所有 $y_i$ 可以并行计算。
+
+\subsubsection{彩色图像转灰度图像}
+
+每个像素具有红、绿、蓝三个分量 $(r_i,g_i,b_i)$。常用的亮度近似为
+\[
+L_i = 0.299r_i + 0.587g_i + 0.114b_i.
+\]
+对任意两个不同像素 $i\ne j$，$L_i$ 的计算不读取或修改像素 $j$ 的输出，因此像素转换彼此独立。顺序循环
+\[
+\texttt{for each pixel: } L_i\leftarrow f(r_i,g_i,b_i)
+\]
+可以被解释成“一个线程对应一次循环迭代”。这正是 CUDA 入门中最重要的\term{循环并行化}{loop parallelism}视角。
+
+\begin{warningbox}[title={判断数据并行时必须问的三个问题}]
+\begin{enumerate}
+  \item 每次迭代写入的位置是否唯一？
+  \item 每次迭代读取的数据是否已经可用，而非由其他并行迭代临时产生？
+  \item 改变不同迭代的执行顺序，是否仍能得到相同结果？
+\end{enumerate}
+三个答案均为“是”时，通常可以直接采用一线程一元素的映射。
+\end{warningbox}

@@ -1,0 +1,136 @@
+
+\section{例题解析与知识归纳}
+
+\subsection{三道例题的条件与推导}
+
+\subsubsection{256 行、4 列矩阵需要多少个线程块}
+
+\textbf{题目。}输入矩阵有 256 行、4 列，线程块为 $16\times16$，每个线程处理一个输入元素。需要启动多少个线程块？
+
+在忽略原矩阵二维几何形状、通过\term{展平或重映射}{flattening / remapping}自行定义索引的假设下，需要\textbf{4 个块}。其数量计算为
+\[
+\text{元素数}=256\times4=1024,\qquad
+\text{每块线程数}=16\times16=256,
+\]
+\[
+N_{\mathrm{blocks}}=1024/256=4.
+\]
+一个实现这种假设的映射为：将 4 个块沿网格的 $x$ 方向排布，块内仍使用 $16\times16$ 个线程。先将块内二维线程索引展平，再映射回原矩阵：
+\begin{align*}
+\ell &=t_y\times16+t_x, &0\le\ell<256,\\
+g&=b_x\times256+\ell, &0\le g<1024,\\
+\mathrm{row}&=\lfloor g/4\rfloor,\qquad
+\mathrm{col}=g\bmod4.
+\end{align*}
+\par\noindent\begin{minipage}{\linewidth}
+对应的索引计算片段为
+
+\begin{lstlisting}[caption={由原题的展平假设展开得到的索引片段。}]
+int localIndex = threadIdx.y * blockDim.x + threadIdx.x;
+int threadsPerBlock = blockDim.x * blockDim.y;
+int index = blockIdx.x * threadsPerBlock + localIndex;
+
+int row = index / 4;
+int col = index % 4;
+\end{lstlisting}
+\end{minipage}\par
+
+\textbf{二维几何覆盖的对照。}若继续使用矩阵乘法中 $x$ 对应列、$y$ 对应行的直接二维映射，则 
+\[
+G_x=\left\lceil\frac4{16}\right\rceil=1,\qquad
+G_y=\left\lceil\frac{256}{16}\right\rceil=16,
+\]
+需要 $1\times16=16$ 个块。每块只有 4 列线程对应有效元素，其余 12 列需由边界判断跳过。这样共启动 4096 个线程，其中 1024 个有效。
+
+\begin{keybox}[title={块数随索引方案变化}]
+展平重映射下，4 个块可让全部 1024 个线程各处理一个有效元素。直接二维覆盖下，需要 16 个块覆盖 256 行，并产生无效边缘线程。判断块数时，需要先确定线程如何对应数据坐标。
+\end{keybox}
+
+\subsubsection{同一线程块中的线程如何交换数据}
+
+\textbf{题目。}某些线程需要读取同一个线程块中其他线程写入的数据。在寄存器、共享内存和全局内存中，哪一种最适合且访问最快？
+
+\textbf{答案：共享内存。}所需存储必须同时满足“同一个块内的线程能够访问同一份数据”和“具有较低访问代价”。共享内存的作用域为线程块，典型位置为 SM，正好匹配这两项需求。
+
+寄存器用于每个线程的私有工作值，不能作为这道题中的普通块内共享存储；全局内存支持跨线程访问，但在给定的存储层次中具有更高的访问代价。因此，在三个选项中，共享内存最合适。
+
+\Needspace{0.4\textheight}
+\subsubsection{两个线程块写同一地址会得到什么结果}
+
+\par\noindent\begin{minipage}{\linewidth}
+\textbf{题目。}设备端分配一个 \code{char} 元素，初始值为 3。执行下列 kernel 后，\code{*dst} 的可能值是什么？
+\begin{lstlisting}[caption={两个线程块各用一个线程写入同一全局地址。}]
+__global__ void kernel(char *dst)
+{
+    dst[0] = blockIdx.x;
+}
+
+// dst[0] was initialized to 3 on the device.
+kernel<<<2, 1>>>(dst);
+\end{lstlisting}
+\end{minipage}\par
+\textbf{按独立写入先后解释的结果：0 或 1。}启动配置包含两个线程块，每个块只有一个线程。块 0 向 \code{dst[0]} 写入 0，块 1 向同一地址写入 1；二者都覆盖原来的值 3。由于块的执行顺序没有保证，在这一写入顺序模型中，最终写入者可以不同。
+
+多个线程块在缺少确定次序的情况下写同一个位置，形成\term{数据竞争}{data race}。全局内存的设备可见性允许线程访问该地址，访问权限本身没有确定谁先写、谁后写。
+
+基本矩阵乘法的输出映射让每个有效位置只有一个写入线程，因此其输出写入不具有这道题的同址竞争。判断并行代码时，需要同时检查输入可以共享读取，以及输出是否被多个线程重复写入。
+
+\subsection{关键公式与术语}
+
+\subsubsection{从地址映射到性能上限}
+下表集中给出前述推导中的关系。$W$ 为方阵宽度，$T$ 为方形线程块宽度；$F$ 为浮点运算量，$Q$ 为所建模存储层的传输字节量。
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{L{0.24\textwidth} Y}
+\toprule
+问题 & 关系与条件 \\
+\midrule
+二维行主序寻址 & $(r,c)\mapsto rW+c$。 \\
+线程负责的位置 & $\mathrm{Row}=b_yB_y+t_y$；$\mathrm{Col}=b_xB_x+t_x$。 \\
+方阵网格大小 & $G_x=G_y=\lceil W/T\rceil$；总块数为 $G_xG_y$。 \\
+基本矩阵乘法计数 & $F=2W^3$；$Q_{\mathrm{req}}=8W^3+4W^2$ B。 \\
+算术强度 & $I=F/Q$，单位为 FLOP/B。 \\
+基本矩阵乘法强度 & $I_{\mathrm{req}}=W/(4W+2)\approx0.25$ FLOP/B。 \\
+向量加法强度 & 读二写一，$I=1/12\approx0.083$ FLOP/B。 \\
+矩阵乘法理想强度 & 输入各读一次、输出写一次，$I_{\mathrm{ideal}}=W/6$。 \\
+Roofline 吞吐上限 & $\mathcal P\le\min(C_{\mathrm{peak}},B_{\mathrm{peak}}I)$。 \\
+屋脊点 & $I_*=C_{\mathrm{peak}}/B_{\mathrm{peak}}$。 \\
+执行时间下限 & $t_{\min}=\max(F/C_{\mathrm{peak}},Q/B_{\mathrm{peak}})$。 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+存储空间决定数据由哪些线程访问、典型位置在哪里；索引映射决定线程实际读写哪些元素；访存量和算术强度把实现与硬件上限连接起来。分析一个 kernel 时，这三个层次应使用相互一致的数据与计数口径。
+
+\Needspace{12\baselineskip}
+\subsubsection{中英文术语对照}
+\begin{longtable}{L{0.23\textwidth} L{0.34\textwidth} L{0.34\textwidth}}
+\toprule
+中文 & 英文 & 对应含义 \\
+\midrule
+\endfirsthead
+\toprule
+中文 & 英文 & 对应含义 \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+寄存器 / 寄存器堆 & Register / register file & 线程当前工作值所在的低延迟存储。 \\
+流式多处理器 & Streaming multiprocessor (SM) & 包含运算核心及片上存储资源。 \\
+共享内存 & Shared memory & 同一线程块共同访问的存储。 \\
+全局内存 & Global memory & 保存设备可见的大型输入输出。 \\
+常量内存 & Constant memory & 设备线程只读，适于一致访问。 \\
+局部内存 & Local memory & 线程私有，由设备内存支持。 \\
+缓存 & Cache & 保留数据副本以支持后续访问。 \\
+作用域 / 生命周期 & Scope / lifetime & 谁能访问，以及存储存在多久。 \\
+行主序 & Row-major order & 同一行的元素连续存储。 \\
+分块 & Tile / tiling & 将矩阵划分为线程块负责的区域。 \\
+归约 & Reduction & 将多个值汇合为一个结果，例如求和。 \\
+展平 / 重映射 & Flattening / remapping & 在数据与线程坐标之间重新建立对应。 \\
+浮点运算 / 吞吐率 & FLOP / FLOPS rate & 运算次数 / 每秒运算次数。 \\
+内存带宽 & Memory bandwidth & 每秒可传输的数据字节数。 \\
+算术强度 & Arithmetic intensity & 每传输一字节对应的运算量。 \\
+屋脊点 & Ridge point & 计算上限与带宽上限的交点。 \\
+内存受限 / 计算受限 & Memory-bound / compute-bound & 由数据供给 / 计算供给主导的限制。 \\
+理论极限性能 & Speed of light & 给定模型下最好可能达到的性能。 \\
+数据竞争 & Data race & 原题中多个线程块无确定次序地写同一地址。 \\
+\end{longtable}

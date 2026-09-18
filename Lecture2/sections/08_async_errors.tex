@@ -1,0 +1,47 @@
+\section{异步执行与错误检查}
+
+\subsection{核函数启动默认是异步的}
+
+\par\noindent\begin{minipage}{\linewidth}
+一次核函数启动通常先把工作提交给 GPU，然后让主机线程继续执行。此行为称为\term{异步调用}{asynchronous call}。因此，下面的 CPU 计时方式主要测到“提交请求”的时间，不一定覆盖 GPU 完成计算所需的时间：
+
+\begin{lstlisting}[style=cuda,numbers=none]
+start_timer();
+vecAddKernel<<<B, T>>>(A_d, B_d, C_d, n);
+stop_timer();      // usually too early
+\end{lstlisting}
+\end{minipage}\par
+
+\par\noindent\begin{minipage}{\linewidth}
+要让主机等待此前提交的设备工作完成，可调用
+\begin{lstlisting}[style=cuda,numbers=none]
+cudaDeviceSynchronize();
+\end{lstlisting}
+\end{minipage}\par
+该函数提供主机与设备之间的\term{同步点}{synchronization point}，并返回此前异步工作中暴露的错误状态。
+
+\slidefig{0.94}{page-32.png}{异步核函数调用与 \code{cudaDeviceSynchronize()}}
+
+当核函数后紧跟设备到主机的 \code{cudaMemcpy} 时，复制不能在产生结果的核函数完成之前得到最终输出。更精确的性能测量通常使用 CUDA\term{事件}{event}，并在需要时配合\term{流同步}{stream synchronization}或\term{性能分析器}{profiler}。
+
+\subsection{两类错误：启动错误与执行错误}
+
+绝大多数 CUDA 运行时 API 都返回 \code{cudaError\_t}。\code{cudaSuccess} 表示成功。其他错误码可交给 \code{cudaGetErrorString}，转换为可读消息。
+
+核函数调用本身没有普通返回值，因此常分两步检查：
+\begin{enumerate}
+  \item \code{cudaGetLastError()}：检查非法启动配置等立即可见的\term{启动错误}{launch error}；
+  \item \code{cudaDeviceSynchronize()}：等待执行完成，并暴露越界访问等\term{异步执行错误}{asynchronous execution error}。
+\end{enumerate}
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[style=cuda,numbers=none]
+vecAddKernel<<<numBlocks, threadsPerBlock>>>(A_d, B_d, C_d, n);
+CUDA_CHECK(cudaGetLastError());
+CUDA_CHECK(cudaDeviceSynchronize());
+\end{lstlisting}
+\end{minipage}\par
+
+\begin{warningbox}[title={简化示例与工程代码的区别}]
+用于突出概念的短代码通常会省略错误检查，也可能包含简化写法。工程代码应检查内存分配、数据复制、核函数启动与核函数执行的返回状态。
+\end{warningbox}

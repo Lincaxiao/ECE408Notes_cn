@@ -1,0 +1,107 @@
+\section{统一方法与关键结论}
+
+\subsection{从输出空间建立并行映射}
+
+三个实例都可用同一建模步骤构造。
+
+\begin{enumerate}
+  \item \textbf{确定输出空间。}向量输出是一维，图像与矩阵输出通常是二维，体数据输出可以是三维。
+  \item \textbf{确定单线程输出。}一个线程生成一个输出元素，使不同线程写入互不重叠的位置。
+  \item \textbf{选择线程块形状。}块的逻辑维度与输出坐标轴对应，二维情形通常令 $x$ 对应列、$y$ 对应行。
+  \item \textbf{向上取整计算网格。}每一维都用数据长度除以对应块尺寸并向上取整。
+  \item \textbf{计算全局逻辑坐标。}逐维使用“块坐标乘块尺寸加块内线程坐标”。
+  \item \textbf{建立边界保护。}输出写入与每一类输入读取都必须由可证明其下标有效的条件保护。
+  \item \textbf{线性化并计算。}按行主序把逻辑坐标转换为线性偏移，再执行逐元素运算或线程内部循环。
+\end{enumerate}
+
+二维输出核函数的通用骨架为
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={二维逐输出元素核函数骨架}]
+__global__
+void kernel(/* arrays and parameters */, unsigned int width,
+            unsigned int height)
+{
+    unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
+    unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < height && col < width) {
+        unsigned int out = row * width + col;
+
+        // Read the valid input working set for (row, col).
+        // Compute one output value.
+        // Write the result to output[out].
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+
+该骨架只规定输出映射。输入工作集由具体算法决定：可以是同位置的若干通道、一个局部邻域，也可以是一整行与一整列。
+
+\subsection{三个实例的结构对照}
+
+\begin{table}[H]
+\centering
+\caption{RGB 转灰度、模糊与矩阵乘法的并行结构}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.17\textwidth} >{\raggedright\arraybackslash}p{0.20\textwidth} >{\raggedright\arraybackslash}p{0.27\textwidth} X}
+\toprule
+计算 & 输出空间 & 单线程输入工作集 & 线程内控制结构 \\
+\midrule
+RGB 转灰度 & $H\times W$ 灰度图像 & 同一像素位置的红、绿、蓝三个分量 & 固定数量的乘加，无循环 \\
+邻域模糊 & $H\times W$ 模糊图像 & 以输出像素为中心的有效邻域 $\mathcal{V}_R(r,c)$ & 两层循环与输入边界条件 \\
+矩阵乘法 & $M\times N$ 输出矩阵 & $A$ 的第 $r$ 行与 $B$ 的第 $c$ 列，共享长度为 $K$ & 一层长度为 $K$ 的累加循环 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+三者的线程数量都由输出空间决定，而单线程工作量由生成一个输出所需的输入数量决定。这一区分有助于判断某个维度应放在网格中，还是应由线程内部循环遍历：
+\begin{itemize}
+  \item 输出坐标通常映射到并行线程；
+  \item 单个输出内部的归约维度通常映射到线程内循环。
+\end{itemize}
+
+\subsection{关键公式汇总}
+
+\begin{align*}
+\text{一维全局下标：}\qquad
+&i=\texttt{blockIdx.x}\,\texttt{blockDim.x}+\texttt{threadIdx.x},\\[1mm]
+\text{二维全局坐标：}\qquad
+&r=\texttt{blockIdx.y}\,\texttt{blockDim.y}+\texttt{threadIdx.y},\\
+&c=\texttt{blockIdx.x}\,\texttt{blockDim.x}+\texttt{threadIdx.x},\\[1mm]
+\text{二维行主序：}\qquad
+&p=rW+c,\\[1mm]
+\text{二维块数：}\qquad
+&G_x=\left\lceil\frac{W}{B_x}\right\rceil,
+\qquad
+G_y=\left\lceil\frac{H}{B_y}\right\rceil,\\[1mm]
+\text{总启动线程数：}\qquad
+&N_{\mathrm{threads,total}}
+=(G_xG_yG_z)(B_xB_yB_z),\\[1mm]
+\text{矩形矩阵乘法：}\qquad
+&C_{r,c}=\sum_{k=0}^{K-1}A_{r,k}B_{k,c}.
+\end{align*}
+
+\subsection{正确性检查表}
+
+\begin{enumerate}
+  \item 网格的每个维度是否按对应输出尺寸向上取整？
+  \item 是否始终使用 $x$ 对应列、$y$ 对应行的同一约定？
+  \item 全局坐标是否包含块偏移与块内偏移两部分？
+  \item 行主序公式中的宽度是否属于正在访问的那个数组？
+  \item 输出写入之前是否检查了所有输出坐标？
+  \item 每次输入读取之前是否检查了该输入访问涉及的全部坐标？
+  \item 邻域循环是否使用能够表示负候选坐标的有符号索引？
+  \item 边界处的平均值是否除以实际参与求和的元素数？
+  \item 矩阵乘法中，输出维度 $M,N$ 与归约维度 $K$ 是否各自使用在正确位置？
+\end{enumerate}
+
+\begin{keybox}
+多维网格的核心作用是把数据的几何结构直接编码到线程坐标中。正确核函数由三条关系组成：
+\[
+\text{线程层次}\rightarrow\text{逻辑输出坐标},
+\qquad
+\text{逻辑坐标}\rightarrow\text{线性内存地址},
+\qquad
+\text{有效性条件}\rightarrow\text{安全访问}.
+\]
+循环与条件控制单个线程的局部工作集，不改变所有线程共享同一核函数代码这一单程序多数据模型。
+\end{keybox}

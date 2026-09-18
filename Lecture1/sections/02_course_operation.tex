@@ -1,0 +1,223 @@
+\Needspace{6\baselineskip}
+\section{课程运行框架、作业流程与学术规范}
+
+\subsection{授课形式与支持体系}
+
+课程以线下授课为主，课堂同时录制并上传至学校媒体平台。实验又称\term{机器问题}{Machine Problem, MP}，项目由学生在课外独立或按指定团队形式完成；两次期中考试均在线下进行。助教团队分别承担实验、项目和答疑工作，办公时间从第二周开始，其时间表由课程管理平台公布。
+
+课程支持体系由多个平台共同构成。每个平台只承担一部分功能，因此应按任务类型选择入口。
+
+\begin{longtable}{L{0.22\textwidth}L{0.28\textwidth}L{0.40\textwidth}}
+\toprule
+\textbf{平台} & \textbf{主要用途} & \textbf{使用要点} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{平台} & \textbf{主要用途} & \textbf{使用要点} \\
+\midrule
+\endhead
+\platform{课程管理平台}{Canvas} & 教学大纲、课件、录像链接、课程文件、项目报告与成绩 & 课件通常在上课前上传；最终成绩在此汇总。\href{https://canvas.illinois.edu/courses/72848}{打开课程页面}。 \\
+\platform{学校媒体平台}{Illinois Media Space} & 课堂录像 & 录像发布到课程专用频道。\href{https://mediaspace.illinois.edu/channel/channelid/413726632}{打开录像频道}。 \\
+\platform{代码托管平台}{GitHub} & 实验与项目的基础代码、开发仓库和最终代码提交 & 先同步发布代码，再在 Delta 上编辑、编译和运行，最后把待评分版本提交到仓库。\href{https://github.com/illinois-cs-coursework/fa26_ece408_.release}{打开发布仓库}。 \\
+\platform{在线评测平台}{PrairieLearn} & 实验配套测验与概念问题 & 应在代码部分完成之后作答，因为部分问题依赖实际运行结果。 \\
+\platform{课程讨论平台}{Campuswire} & 公告、学生问答、教师与同学共同讨论 & 面向班级显示时可采用匿名形式；不能把它当作提交受保护代码的渠道。\href{https://campuswire.com/c/GDA51582C/feed}{打开讨论区}。 \\
+\platform{课程人工智能问答系统}{course AI chatbot} & 课程规则、统一计算设备架构概念、接口、编译与运行错误等问题 & 推荐先询问该系统；若结果不充分，再使用讨论区或办公时间。链接以课程管理平台的当期入口为准。 \\
+\bottomrule
+\end{longtable}
+
+\subsection{教材与技术文档}
+
+首选教材为 Wen-mei Hwu、David Kirk 与 Izzat El Hajj 编写的《大规模并行处理器编程：实践方法》\allowbreak (\textit{Programming Massively Parallel Processors: A Hands-on Approach}) 第五版，2026 年出版。第四版于 2022 年出版，也被课程接受，并可通过学校订阅在线阅读。第三版及更早版本由于内容老化，不建议使用。
+
+统一计算设备架构的主要文档包括：
+\begin{itemize}
+  \item 《统一计算设备架构 C 编程指南》\allowbreak (\textit{CUDA C Programming Guide})；
+  \item 《统一计算设备架构 C++ 最佳实践指南》\allowbreak (\textit{CUDA C++ Best Practices Guide})。
+\end{itemize}
+
+Delta 环境安装 CUDA 13.2，文档参考涉及 13.2 与 13.3 两个版本。阅读文档时需核对文档版本与安装版本；实际使用时应以课程管理平台的当期公告为准。
+
+\subsection{典型周节奏与提交时间}
+
+前三周的示例安排如下：
+\begin{table}[H]
+\centering
+\caption{前三周典型节奏}
+\begin{tabularx}{\textwidth}{C{0.12\textwidth}Y Y}
+\toprule
+\textbf{周次} & \textbf{课堂内容} & \textbf{课外任务与截止项} \\
+\midrule
+第 1 周 & 周二：第 1 讲“导论”；周四：第 2 讲“统一计算设备架构导论” & 配置代码仓库与计算机访问权限。 \\
+第 2 周 & 周二：数据并行模型；周四：统一计算设备架构内存模型 & 实验 0：设备查询示例。 \\
+第 3 周 & 周二：继续讲解内存模型；周四：性能考虑 & 实验 1：向量加法示例。 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+部分周次会用项目检查点替代实验提交；项目被拆分为三个检查点，并采用逐步完成的交付方式。
+
+所有实验和项目里程碑的正式截止时间均为\important{美国中部时间周五晚 8:00}。课程同时提供三天默认宽限期：在周一晚 8:00 之前提交仍可获得满分，且不需要提前通知。宽限期的制度含义必须准确理解：
+\begin{itemize}
+  \item 正式截止时间仍是周五晚 8:00，周一不是新的常规截止时间；
+  \item 如需超过三天的额外延长，必须在周五晚 8:00 之前给负责该作业的助教发邮件；
+  \item 周五晚 8:00 之后提出的额外延长请求不予考虑，是否批准由课程团队根据特殊情况决定；
+  \item 周一晚 8:00 时仓库中的代码被视为最终版本。即使较早提交过正确版本，评分也会取该时刻检出的仓库状态。
+\end{itemize}
+
+\begin{warningbox}
+共享超级计算机可能因系统维护或队列拥堵而延迟作业启动。宽限期为这类不可控情况提供缓冲，但它不能替代提前开始。若大量学生在周五集中提交，等待计算节点本身就可能消耗数小时。
+\end{warningbox}
+
+\subsection{评分结构与考核方式}
+
+课程总评由三部分组成：
+\begin{table}[H]
+\centering
+\caption{总评构成}
+\begin{tabularx}{\textwidth}{L{0.22\textwidth}C{0.16\textwidth}Y}
+\toprule
+\textbf{组成} & \textbf{权重} & \textbf{具体规则} \\
+\midrule
+期中考试 & 50\% & 两次期中考试各占 25\%；第一次约覆盖前 11 讲，第二次约覆盖其余讲次。课程没有期末考试；期中考试为三小时纸笔考试，并要求手写与实验相近的代码。 \\
+实验 & 25\% & 自动数据集通过情况约占实验成绩的 90\%，同时考查配套问题的正确性；最低的一个计分实验成绩被舍弃；实验 0 和实验 1 不计入总评。实验数量与各项权重以课程团队发布的详细量规为准。 \\
+项目 & 25\% & 演示、功能与编码风格约占项目分数的 50\%；在完整功能成立的前提下，性能约占另外 50\%。详细量规将在之后公布。 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+项目形式包括两种：一种围绕卷积神经网络若干层的实现；另一种由两至三人组队，实现大语言模型或变换器中的若干层。无论选择哪类项目，功能完整性都先于性能评分。一个输出错误但运行很快的程序不构成高性能实现，因为其计算语义已经改变。
+
+纸笔考试与实验之间形成直接约束。实验中出现的程序结构可能在考试中以手写代码形式再次出现，因此完成实验的目标包含两层：一是获得正确输出，二是建立不依赖代码生成器或他人实现的独立编程能力。
+
+\subsection{实验的端到端工作流}
+
+实验采用下列端到端流程：
+\begin{enumerate}
+  \item 从课程发布仓库取得基础代码，并按说明把发布内容合并到个人仓库；
+  \item 在 Delta 的登录节点上编辑与编译代码；
+  \item 通过作业调度系统把程序提交到计算节点执行，不能在登录节点上直接运行重计算任务；
+  \item 根据正确性测试与运行结果继续调试，直到代码满足作业要求；
+  \item 将最终版本提交到代码托管仓库，供评分流程检出；
+  \item \important{代码部分完成后}，再回答在线评测平台中的配套问题。
+\end{enumerate}
+
+最后一步的顺序不是形式要求。实验问题往往询问实际输出、性能现象或实现细节；在程序尚未完成时作答，会把推测当成测量结果，也更容易忽略题目中隐含的前提。
+
+\subsection{Delta 超级计算机与作业调度}
+
+Delta 是由美国国家超级计算应用中心运行、通过高等科学与工程研究计算环境分配资源的超级计算机。课程使用其中配备 A40 图形处理器的子系统。四卡计算节点规格如下。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.94\textwidth]{delta_a40_system.png}
+  \caption{Delta 四卡 A40 子系统}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{四卡 A40 计算节点规格}
+\begin{tabularx}{0.84\textwidth}{L{0.46\textwidth}Y}
+\toprule
+\textbf{项目} & \textbf{数值} \\
+\midrule
+节点数量 & 100 \\
+图形处理器型号 & 英伟达 A40 \\
+每节点图形处理器数量 & 4 \\
+每卡显存 & 48 GB \\
+中央处理器 & AMD Milan \\
+每节点中央处理器插槽数 & 1 \\
+每插槽核心数 & 64 \\
+每节点核心总数 & 64 \\
+近似时钟频率 & \SI{2.45}{\giga\hertz} \\
+主存容量 & 256 GB \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Delta 是多用户共享系统。用户首先连接到\term{登录节点}{login node}或\term{头节点}{head node}，在这里管理文件、编辑代码和编译程序。实际计算通过\term{作业调度系统}{job scheduler} Slurm 提交到\term{计算节点}{compute node}。调度器根据请求的资源、队列状态与系统策略决定作业何时启动。
+
+该共享系统具有以下运行特性：
+\begin{itemize}
+  \item 用户可能登录到多个登录节点中的任意一个；这些节点共享文件系统与调度队列，因此登录节点编号变化不影响文件可见性。
+  \item 系统繁忙时，作业可能等待数分钟、数小时，项目级大任务甚至可能等待更久。
+  \item 课程作业通常请求一张图形处理器，而一个计算节点包含四张 A40，因此同一节点上最多可同时存在若干用户作业。
+  \item 调度器对分配给不同作业的图形处理器进行隔离；一个作业不能使用分配给另一个作业的设备。
+  \item 登录节点面向许多并发用户，不能把它当作绕过调度器的计算节点。
+\end{itemize}
+
+\begin{keybox}
+在共享超级计算环境中，“程序运行时间”与“从提交到拿到结果的墙钟时间”不是同一个量。前者是作业实际执行时间，后者还包含排队等待。课程截止时间约束的是完整工作流，因此排队风险必须通过提前提交来管理。
+\end{keybox}
+
+\subsection{Delta 账户与登录步骤}
+
+账户建立需要经过高等科学与工程研究计算环境和 Delta 两层系统，不能在截止日前临时完成。具体步骤如下：
+\begin{enumerate}
+  \item 在\href{https://identity.access-ci.org/new-user}{账户注册页面}创建用户；已有账户者继续使用原用户名，不应重复注册。
+  \item 新建账户时把“伊利诺伊大学厄巴纳-香槟分校”选作\term{身份提供方}{Identity Provider}，以学校凭据完成认证。
+  \item 记录由系统分配的用户标识，并通过\href{https://forms.illinois.edu/sec/197644781}{课程表单}提交给课程团队。
+  \item 等待课程团队把用户加入课程资源组，再等待 Delta 端完成账户创建。典型等待时间为 24--48 小时，完整传播过程可能更长。
+  \item
+  \begin{minipage}[t]{\linewidth}
+  收到确认邮件后，通过安全外壳协议连接：
+  \begin{center}
+    \code{ssh yourusername@login.delta.ncsa.illinois.edu}
+  \end{center}
+  \end{minipage}
+  \item 登录需要 Duo 双因素认证；随后克隆课程仓库并按仓库说明配置环境。
+\end{enumerate}
+
+\subsection{课程人工智能问答系统的技术机制}
+
+课程问答系统采用\term{检索增强生成}{Retrieval-Augmented Generation, RAG}。它不只依赖语言模型内部参数回答问题，而是先从课程材料中检索相关片段，再把这些片段作为上下文交给语言模型。
+
+\begin{modelbox}
+其基本数据流可表示为
+\begin{equation*}
+\begin{aligned}
+\text{课程文档} &\longrightarrow \text{分段}
+\longrightarrow \text{嵌入向量}
+\longrightarrow \text{向量数据库}, \\
+\text{学生问题} &\longrightarrow \text{问题嵌入}
+\longrightarrow \text{相似片段检索}, \\
+&\hspace{1.5em}\longrightarrow \text{上下文拼接}
+\longrightarrow \text{大语言模型}
+\longrightarrow \text{回答与来源指向}.
+\end{aligned}
+\end{equation*}
+其中，嵌入向量 (embedding) 用数值向量表示文本语义，向量数据库 (vector database) 用于相似性检索，大语言模型 (large language model) 根据检索上下文生成回答。
+向提示词中放入大量课程上下文称为\term{上下文填充}{context stuffing}或\term{超长提示构造}{mega-prompting}。系统可通过应用程序编程接口调用模型，也可使用本地运行的开源模型。
+\end{modelbox}
+
+检索增强只能提高回答与课程材料的一致性，不能保证每个答案都正确。系统可能遗漏题目隐含假设、检索到不完整片段，或在生成过程中引入错误。课程明确规定：学生对最终代码与答案承担责任，不能把“问答系统给出了该答案”作为重新评分的依据。
+
+\subsection{允许与禁止的协作和人工智能使用}
+
+课程允许概念层面的讨论，也鼓励学生利用问答系统学习接口与技术；同时严格禁止把实现责任转移给他人或人工智能工具。边界可按下表理解。
+
+\begin{longtable}{L{0.47\textwidth}L{0.47\textwidth}}
+\toprule
+\textbf{允许} & \textbf{禁止} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{允许} & \textbf{禁止} \\
+\midrule
+\endhead
+与同学讨论思路、算法方向、所用函数以及调试策略；接受修过课程者的口头建议。 & 查阅往年作业实现或网络上发布的本课程作业答案。 \\
+询问统一计算设备架构接口的含义，例如内存复制函数的作用、内核函数的调用方式。 & 要求人工智能系统直接生成某个实验或项目的实现代码。 \\
+询问编程技术，例如共享内存数组如何声明、运行时如何指定动态共享内存大小。 & 复制超过一行左右的非平凡代码；让他人提供代码同样会受到处罚。 \\
+询问并行编程概念与性能优化原理，例如分块为什么能改善全局内存带宽。 & 阅读他人代码或人工智能生成的代码后，再离开原文“独立重写”；课程把这种行为也视为复制。 \\
+询问编译错误、运行时错误的含义，并学习系统化调试方法。 & 把完整程序粘贴给问答系统，让系统代替自己定位并修复错误。 \\
+进行期中复习与一般课程规则查询。 & 把实验测验题直接粘贴给问答系统，或在考试中给予、接受帮助。 \\
+逐行理解并按当前问题改写课堂明确提供的代码示例。 & 故意规避实验要求，或只做表面变量改名、语句重排来掩盖复制。 \\
+\bottomrule
+\end{longtable}
+
+“非平凡代码”通常指超过一行左右的实现。代码相似性检测不只比较变量名，也能识别重排、改名等表面变化。允许引用课堂示例的前提是逐行理解并针对当前程序进行实质性改写，而不是整段搬运。
+
+学术不端的后果为：第一次在相应作业或考试上记零分，并通过学校的 FAIR 系统向学院报告；重复违规将导致课程自动不及格。提供代码者与接收代码者都可能受到相同处罚，因为相似性检测并不能可靠判断谁最先写出该实现。
+
+\begin{warningbox}
+课程对人工智能工具的限制不是“完全禁止使用”。允许用途集中在概念、接口、错误解释与复习；禁止用途集中在替代学生完成受评分实现。判定边界时应问：该工具是在帮助理解问题，还是在产生本应由学生独立完成的答案或代码？
+\end{warningbox}

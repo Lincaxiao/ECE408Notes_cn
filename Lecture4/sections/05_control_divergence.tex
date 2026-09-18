@@ -1,0 +1,104 @@
+\section{控制发散与有效执行通道}
+
+\subsection{控制发散是线程束内部的问题}
+
+当同一线程束中的线程对分支条件得到不同结果，或执行不同数量的循环迭代时，就出现\term{控制发散}{control divergence}。线程束需要依次处理不同控制路径；处理某一路径时，只启用需要执行该路径的通道，其他通道处于非活动状态。
+
+如果两个不同线程束分别选择不同路径，但每个线程束内部的 32 个线程都一致，则不存在该意义下的线程束内发散。因而判断发散时，关键问题是：\textbf{同一线程束的活动通道是否对当前控制条件意见一致。}
+
+\subsection{分支发散示例}
+
+\par\noindent\begin{minipage}{\linewidth}
+考虑以下条件：
+
+\begin{lstlisting}[caption={线程束内的分支发散}]
+if (threadIdx.x < 24) {
+    A;
+} else {
+    B;
+}
+C;
+\end{lstlisting}
+\end{minipage}\par
+
+对第一个线程束，线程索引为 \(0\sim31\)。条件成立的线程有 24 个，条件不成立的线程有 8 个。因此执行路径 \(A\) 时有 24 个活动通道、8 个非活动通道；执行路径 \(B\) 时则相反。两条路径都完成后，线程束重新会合并共同执行 \(C\)。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.86\textwidth]{control_divergence_p22.png}
+  \caption{同一线程束中的线程在条件分支上分成两组时，两条路径对该线程束串行处理，未选择当前路径的通道保持非活动}
+\end{figure}
+
+\subsection{活动通道比例与发散区间效率}
+
+\term{活动通道比例}{active-lane fraction}是一次 SIMT/SIMD 执行中启用的线程或执行通道所占比例。对于线程束大小 \(W\)，某条路径上有 \(n\) 个活动线程时，活动通道比例为
+\[
+f_{\mathrm{active}}=\frac{n}{W}.
+\]
+
+在上例中，路径 \(A\) 的活动通道比例是 \(24/32=75\%\)，路径 \(B\) 的活动通道比例是 \(8/32=25\%\)。若两条路径拥有相同数量的动态指令，则仅考虑分支区间时，两个串行阶段一共提供 \(2W=64\) 个通道-指令槽，其中实际有用的通道-指令数为 \(24+8=32\)，因此平均有效比例为
+\[
+\eta=\frac{24+8}{2\times32}=50\%.
+\]
+
+若不同路径长度不同，可把这一思路写成加权形式。设路径 \(p\) 有 \(n_p\) 个活动线程，并执行 \(I_p\) 条动态指令，则发散区间的通道利用率可写成
+\[
+\eta=\frac{\sum_p n_p I_p}{W\sum_p I_p}.
+\]
+该表达式只描述“每条路径串行执行、非参与通道关闭”造成的通道利用率，没有包含存储延迟、流水线吞吐或其他瓶颈。
+
+\subsection{循环也会产生控制发散}
+
+\par\noindent\begin{minipage}{\linewidth}
+若每个线程的循环次数来自线程私有数据，例如
+
+\begin{lstlisting}[caption={每线程循环次数不同造成的发散}]
+int N = a[threadIdx.x];
+for (int i = 0; i < N; ++i) {
+    A;
+}
+\end{lstlisting}
+\end{minipage}\par
+
+则线程束中的线程可能在不同迭代结束。只要还有某个活动线程尚未达到自己的 \(N\)，线程束就必须继续执行循环体；已经完成的线程通道则保持非活动。随着越来越多线程退出，活动通道比例会逐步下降。
+
+因此，发散不仅来自显式的 \code{if}/\code{else}。任何依赖每线程数据的控制结构，包括循环退出条件，都可能让同一线程束内部的动态执行路径不同。
+
+\subsection{通过线程束粒度组织条件减少发散}
+
+一种减少分支发散的方法是让条件在一个线程束内部保持恒定。例如令条件依赖
+\[
+\left\lfloor\frac{\text{threadIdx.x}}{\text{warpSize}}\right\rfloor,
+\]
+\par\noindent\begin{minipage}{\linewidth}
+则同一线程束内的线程具有相同商值。不同线程束仍然可以选择不同分支，但每个线程束内部不会因为该条件产生发散。
+
+\begin{lstlisting}[caption={线程束粒度的分支条件}]
+if (threadIdx.x / warpSize > 2) {
+    // 路径 A
+} else {
+    // 路径 B
+}
+\end{lstlisting}
+\end{minipage}\par
+
+这里仍有两个程序路径；优化点在于路径选择发生在线程束粒度，而不是在线程粒度。
+
+\subsection{边界检查中的少量发散通常不可避免}
+
+\par\noindent\begin{minipage}{\linewidth}
+处理向量或图像时，问题规模经常不是线程块大小的整数倍。常见写法会向上取整线程块数量，然后在核函数中执行边界检查：
+
+\begin{lstlisting}[caption={向量尾部的边界检查}]
+int i = blockIdx.x * blockDim.x + threadIdx.x;
+if (i < N) {
+    // 有效工作
+}
+\end{lstlisting}
+\end{minipage}\par
+
+最后一个线程块中可能只有部分线程有效，因此最后若干线程束会出现发散。这类发散通常只影响计算尾部的一小部分线程束，代价有限。实际目标不是机械消除所有分支，而是避免让大量线程束长期处于严重的通道失活状态。
+
+\begin{keybox}
+减少控制发散的核心原则是让控制条件尽量在线程束内部保持一致。判断性能影响时，应关注发散路径的长度以及每条路径上的活动通道比例，而不是只统计源代码里有多少个分支语句。
+\end{keybox}

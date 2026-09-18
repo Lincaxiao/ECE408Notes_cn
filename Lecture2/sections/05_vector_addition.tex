@@ -1,0 +1,124 @@
+\section{向量加法：从顺序循环到线程网格}
+
+\subsection{顺序基线与并行分解}
+
+向量加法（vector addition）是数据并行程序中的“Hello, World!”。给定长度均为 $n$ 的向量 $A$ 与 $B$，目标是计算
+\[
+C[i]=A[i]+B[i],\qquad 0\le i<n.
+\]
+\par\noindent\begin{minipage}{\linewidth}
+顺序 C++ 实现用一个循环依次完成 $n$ 次加法：
+
+\begin{lstlisting}[style=cuda]
+void vecAddCPU(const float* A, const float* B, float* C, int n) {
+    for (int i = 0; i < n; ++i) {
+        C[i] = A[i] + B[i];
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+
+并行化时，不需要保留这个循环的顺序执行结构。把第 $i$ 次循环迭代定义为一个独立工作单元，再把工作单元 $i$ 分配给全局线程 $i$：
+\[
+\text{线程 }i\quad\longleftrightarrow\quad C[i]=A[i]+B[i].
+\]
+因此，原来的循环被整个线程网格替代。并行化前应先回答“每个线程究竟独立负责什么工作”，因为这一选择会同时决定线程数量、数据布局与后续优化空间。
+
+\begin{keybox}[title={唯一写入者映射}]
+输出元素 $C[i]$ 由唯一线程 $i$ 负责写入。不同线程不会同时修改同一输出位置，因此不需要原子操作或同步。
+\end{keybox}
+
+\subsection{CPU 与 GPU 的分离内存空间}
+
+经典的离散 GPU 系统模型由彼此分离的主机与设备内存空间组成：CPU 连接\term{主机内存}{host memory}，GPU 连接\term{设备全局内存}{device global memory}。主机指针默认指向主机地址空间，设备指针指向设备地址空间；在基础 CUDA 编程模型中，二者不能被对方代码直接解引用。
+
+\slidefig{0.94}{page-15.png}{设备内存管理的五个阶段}
+
+完整数据流由五步构成：
+\begin{enumerate}
+  \item 在设备端分配空间；
+  \item 把输入数据从主机复制到设备；
+  \item 在设备端启动核函数并计算；
+  \item 把结果从设备复制回主机；
+  \item 释放设备端空间。
+\end{enumerate}
+
+即使系统提供\term{统一内存}{unified memory}或某些物理共享内存机制，数据仍需要在合适时机出现在 GPU 可高效访问的位置。显式分配与显式复制能够清楚呈现数据移动的成本与依赖关系。
+
+\subsection{设备内存管理 API}
+
+\subsubsection{分配与释放}
+
+\begin{center}
+\begin{tabularx}{0.96\textwidth}{>{\ttfamily}l X}
+\toprule
+\normalfont\textbf{CUDA API} & \textbf{作用与关键参数}\\
+\midrule
+cudaMalloc(void **devPtr, size\_t size) & 在设备全局内存中分配 \code{size} 字节，并把起始地址写入 \code{*devPtr}。返回值类型为 \code{cudaError\_t}。\\
+\addlinespace
+cudaFree(void *devPtr) & 释放由 \code{devPtr} 指向的设备内存区域。\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+对 $n$ 个 \code{float} 元素，字节数应写成
+\[
+S=n\cdot\code{sizeof(float)}.
+\]
+\par\noindent\begin{minipage}{\linewidth}
+实际代码宜用 \code{size\_t} 保存 $S$，避免大规模数组下的整数溢出。
+
+\begin{lstlisting}[style=cuda,numbers=none]
+size_t bytes = static_cast<size_t>(n) * sizeof(float);
+float *A_d = nullptr, *B_d = nullptr, *C_d = nullptr;
+
+cudaMalloc(reinterpret_cast<void**>(&A_d), bytes);
+cudaMalloc(reinterpret_cast<void**>(&B_d), bytes);
+cudaMalloc(reinterpret_cast<void**>(&C_d), bytes);
+// ... use the allocations ...
+cudaFree(A_d);
+cudaFree(B_d);
+cudaFree(C_d);
+\end{lstlisting}
+\end{minipage}\par
+
+\begin{warningbox}[title={设备指针的语义}]
+\code{A\_d} 的数值是设备地址。主机代码可以把它传给 CUDA 运行时 API 或核函数，但不应在普通主机表达式中写 \code{A\_d[i]}。设备端数据访问应发生在核函数中。
+\end{warningbox}
+
+\subsubsection{主机-设备数据复制}
+
+\par\noindent\begin{minipage}{\linewidth}
+\code{cudaMemcpy} 的接口为
+\begin{lstlisting}[style=cuda,numbers=none]
+cudaError_t cudaMemcpy(void* dst, const void* src,
+                       size_t count, cudaMemcpyKind kind);
+\end{lstlisting}
+\end{minipage}\par
+
+第四个参数明确复制方向：
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{枚举常量} & \textbf{方向}\\
+\midrule
+\code{cudaMemcpyHostToHost} & 主机到主机（host to host）\\
+\code{cudaMemcpyHostToDevice} & 主机到设备（host to device）\\
+\code{cudaMemcpyDeviceToHost} & 设备到主机（device to host）\\
+\code{cudaMemcpyDeviceToDevice} & 设备到设备（device to device）\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\par\noindent\begin{minipage}{\linewidth}
+向量加法的输入与输出复制分别为
+\begin{lstlisting}[style=cuda,numbers=none]
+cudaMemcpy(A_d, A_h, bytes, cudaMemcpyHostToDevice);
+cudaMemcpy(B_d, B_h, bytes, cudaMemcpyHostToDevice);
+// kernel launch
+cudaMemcpy(C_h, C_d, bytes, cudaMemcpyDeviceToHost);
+\end{lstlisting}
+\end{minipage}\par
+
+读代码时可先检查 \code{dst} 与 \code{src} 是否和复制方向一致。例如，\code{cudaMemcpyDeviceToHost} 要求目标指针位于主机端、源指针位于设备端。

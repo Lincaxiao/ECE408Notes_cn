@@ -1,0 +1,27 @@
+\section{课程安排与核心内容}
+
+\subsection{学习目标与技术范围}
+CUDA 存储模型连接了两类问题：线程能够访问哪些数据，以及这些访问如何影响计算速度。基本矩阵乘法提供了一个完整例子：为输出元素分配线程，建立正确的地址映射，再根据浮点运算量与访存量分析性能。
+
+学习目标为：了解 CUDA 线程可访问的各类存储器的基本特点；为 Lab 2 的基本矩阵乘法实现做准备；学习评估全局内存访问对性能的影响；了解 GPU 性能指标。对应的技术内容依次为存储层次、基本矩阵乘法，以及算术强度和 Roofline 性能模型。
+
+\subsection{实验、交流与课程项目}
+\subsubsection{实验与支持渠道}
+以下安排对应 \textbf{2026 年 9 月 8 日}的课程信息。Lab 1 的截止时间为当周周五，\textbf{9 月 11 日}；需要先完成 Lab 0，Lab 1 不计入最终成绩。
+
+课程问题通过 Campuswire 发布，课程工作人员只回复在 Campuswire 上发布的问题。提问前应先尝试自行查找答案，包括询问课程聊天机器人。答疑时间同时包含线下与线上形式，需要查看相应时间表。课后事项为阅读教材第 3 章、取得 Delta 账户、设置 GitHub，以及提交 Labs 0 和 1。
+
+\subsubsection{课程项目与暂定里程碑}
+两个项目方向都只实现\term{推理的前向计算}{inference / forward pass}，区别在于实现对象与组织形式。
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{L{0.12\textwidth} Y L{0.25\textwidth}}
+\toprule
+方向 & 实现内容 & 组织形式 \\
+\midrule
+CNN & LeNet-5 卷积神经网络中的卷积层 & 个人项目 \\
+GPT-2 & GPT-2 模型中的各层 & 团队项目，每组 3--4 人 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+\noindent 暂定时间为：Milestone 1 在第 7--8 周，Milestone 2 在第 10--11 周，Milestone 3 在第 15--16 周。以上里程碑为暂定周次。

@@ -1,0 +1,204 @@
+\section{优化权衡与例题}
+\subsection{常见优化的功能清单}
+\subsubsection{计算利用率}
+计算利用率优化主要处理可执行工作不足、循环和依赖停顿，以及 SIMD 执行中的空闲线程。
+
+\begin{table}[H]
+  \centering\small
+  \caption{计算利用率优化的收益与实现方向。}
+  \begin{tabularx}{\linewidth}{@{}L{0.18\linewidth}Y Y@{}}
+  \toprule
+  优化 & 对计算与访存的收益 & 实现方向\\
+  \midrule
+  占用率调节 & 用更多工作隐藏流水线延迟；用更多并行内存请求隐藏 DRAM 延迟。 & 调节每块线程数、每块共享内存及每线程寄存器等 SM 资源用量。\\
+  循环展开 & 减少循环分支；暴露独立指令；可能促进局部数组进入寄存器而减少内存访问。 & 利用编译器展开，在适用处使用编译期可知的固定循环范围。\\
+  减少控制分歧 & 提高 SIMD 效率，减少统一执行过程中空闲的计算资源。 & 重新组织线程与工作、数据的映射，或调整数据布局。\\
+  \bottomrule
+  \end{tabularx}
+\end{table}
+\FloatBarrier
+
+\subsubsection{内存利用率}
+内存利用率优化分别减少无效传输、跨层重复取数和冲突串行化。共享内存分块主要减少全局内存与 SM 之间的重复传输；寄存器分块进一步减少共享内存到寄存器的重复取数。
+
+\begin{table}[H]
+  \centering\small
+  \caption{内存利用率优化。私有化用于减少共享访问冲突。}
+  \begin{tabularx}{\linewidth}{@{}L{0.18\linewidth}Y Y@{}}
+  \toprule
+  优化 & 对计算与访存的收益 & 实现方向\\
+  \midrule
+  合并全局访存 & 减少等待全局数据的停顿；减少无效流量，提高 burst／缓存行利用率。 & 调整线程映射或数据布局；合并地搬入共享内存，再在其中执行所需访问，例如 corner turning。\\
+  共享内存分块 & 减少全局内存流量及相应等待。 & 把线程块内重复使用的数据保存在共享内存，减少跨全局内存层的重复传输。\\
+  寄存器分块 & 减少共享内存流量及相应等待。 & 把线程或 warp 内复用的数据放入寄存器，减少共享内存到寄存器的重复取数。\\
+  \makecell[l]{\textbf{私有化}\\\textit{privatization}} & 减少原子更新引起的等待、竞争与串行化。 & 先在私有副本上做局部更新，完成后再更新公共副本。\\
+  \bottomrule
+  \end{tabularx}
+\end{table}
+\FloatBarrier
+
+\subsubsection{同步延迟与一般工作粒度}
+\paragraph{Warp \term{级原语}{warp-level primitives}}
+先在 warp 内完成需要协调的操作，再在块内合并各 warp 的结果，可减少块级屏障和共享内存流量。
+
+\paragraph{双缓冲}
+把写入和此前的读取放到不同缓冲区，消除写后于读的假依赖，从而删除用于保护该假依赖的屏障。
+
+\paragraph{线程粗化}
+把多个并行单元分配给同一线程，用于减少不必要的并行化开销。计算和内存两方面的收益均取决于被减少的开销类型。
+
+\subsection{优化顺序、资源权衡与瓶颈}
+\subsubsection{从数据搬运到线程内工作}
+优化目标可以按以下顺序组织。这个顺序先检查传输量，再检查传输效率与并发程度，最后结合每线程工作和实际测量。
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.1em]
+  \item \textbf{减少不必要的数据流量。}通过复用和分块，避免反复搬运已经取得的数据。
+  \item \textbf{提高必要流量的传输效率。}通过合并访存，让一次传输覆盖尽可能多的有效数据。
+  \item \textbf{暴露足够多的并行工作。}通过延迟隐藏和 MLP，使不同请求能够重叠处理。
+  \item \textbf{增加每线程的有效工作。}结合线程粗化和 ILP，减少重复开销并提高独立指令的可见性。
+  \item \textbf{比较优化前后的测量结果。}依据应用在目标设备上的表现评价变换。
+\end{enumerate}
+
+\subsubsection{优化会交换不同资源}
+占用率、数据复用与每线程工作量共享同一组有限的 SM 资源。增加驻留线程可以隐藏更多延迟，也会增加寄存器、共享内存和缓存的竞争；增加共享内存子块可以提高复用，但可能减少同时驻留的线程块；增加粗化因子可以减少并行化开销，但提高每线程资源需求。
+
+这些关系使单个指标的最大值与实际性能之间存在权衡。合理的配置需要同时保留足够独立的工作，以及支撑每线程有效计算和数据复用的资源。
+
+\subsubsection{以应用在目标设备上的瓶颈为依据}
+\term{瓶颈}{bottleneck}是限制应用在某个设备上继续提高性能的约束。它同时取决于应用与设备：相同代码在不同设备上的限制可能不同，同一设备处理不同应用也可能受到不同资源约束。
+
+优化通过增加一种资源的使用，缓解另一种资源的限制。诊断出主要瓶颈之后，才有依据判断应优先减少数据量、改善访存布局、增加并行请求，还是减少同步和线程内停顿。
+
+\paragraph{性能上限与停止条件}
+将应用性能与对应的\term{速度极限}{speed-of-light performance}比较，有助于判断还有多大的改进空间，以及何时停止继续优化。比较时需使用相同设备和计算条件下的性能上限。
+\FloatBarrier
+
+\Needspace{0.6\textheight}
+\subsection{例题一：线程块形状改变访存优势}
+\subsubsection{题目与已知信息}
+\par\noindent\begin{minipage}{\linewidth}
+下面两个写法使用相同的全局线程坐标。比较它们的全局内存访问效率：
+
+\begin{lstlisting}[caption={两种行列下标映射。A、B 表示数组名；注释中的 A/B 表示待比较的两种写法。}]
+int tx = blockIdx.x * blockDim.x + threadIdx.x;
+int ty = blockIdx.y * blockDim.y + threadIdx.y;
+
+// Form A
+B[ty * Width + tx] = 2 * A[ty * Width + tx];
+
+// Form B
+B[tx * Width + ty] = 2 * A[tx * Width + ty];
+\end{lstlisting}
+\end{minipage}\par
+
+只给出地址表达式时，答案是\textbf{尚不能判断}，因为线程块的启动形状没有给出。两种写法的输入读取和输出写入都使用各自相同的下标，因此分析该下标在一个 warp 内如何变化即可。
+
+\subsubsection{\texorpdfstring{$32\times8$}{32x8} 与 \texorpdfstring{$1\times32$}{1x32} 的相反结果}
+记 $W=\code{Width}$。忽略所有线程共有的起始偏移，只比较相邻 lane 之间的下标变化。
+
+\paragraph{线程块为 \code{dim3(32, 8)}}
+一个 warp 内的 \code{ty} 固定，\code{tx} 随 lane 增加 1。写法 A 的下标增加 1，写法 B 的下标增加 $W$，因此原例给出的预期优势是 A：
+\begin{align}
+  I_{\mathrm A}(\ell)&=I_{\mathrm A}(0)+\ell,\\
+  I_{\mathrm B}(\ell)&=I_{\mathrm B}(0)+\ell W.
+\end{align}
+
+\paragraph{线程块为 \code{dim3(1, 32)}}
+一个 warp 内的 \code{tx} 固定，\code{ty} 随 lane 增加 1。此时写法 A 的下标增加 $W$，写法 B 的下标增加 1，原例给出的预期优势变为 B：
+\begin{align}
+  I_{\mathrm A}(\ell)&=I_{\mathrm A}(0)+\ell W,\\
+  I_{\mathrm B}(\ell)&=I_{\mathrm B}(0)+\ell.
+\end{align}
+
+同一段下标表达式的表现，会随着哪一个线程坐标在 warp 内连续变化而改变。
+
+\subsubsection{\texorpdfstring{$16\times16$}{16x16}：分别展开两组 16 个线程}
+考察线程块内第一个 warp，去掉全局起点偏移后，前 16 个 lane 的坐标为 $(t_x,t_y)=(0,0),\ldots,(15,0)$，后 16 个 lane 为 $(0,1),\ldots,(15,1)$。因此两种写法的相对元素下标分别为：
+\begin{align}
+  I_{\mathrm A}:\quad&
+  \underbrace{0,1,\ldots,15}_{t_y=0},\quad
+  \underbrace{W,W+1,\ldots,W+15}_{t_y=1},\\
+  I_{\mathrm B}:\quad&
+  \underbrace{0,W,\ldots,15W}_{t_y=0},\quad
+  \underbrace{1,W+1,\ldots,15W+1}_{t_y=1}.
+\end{align}
+
+写法 A 形成两段各 16 个元素的行内连续访问；写法 B 在每组 16 个线程内部具有步长 $W$，两组之间在对应位置形成相邻的两个元素。具体传输区域的覆盖还要代入矩阵宽度与起点，因此源例要求分别分析两组线程，而不是直接套用“整个 warp 都沿 $x$ 变化”的情形。
+
+\begin{table}[H]
+  \centering\small
+  \caption{启动形状与 warp 地址分布的对应关系。}
+  \begin{tabularx}{\linewidth}{@{}L{0.22\linewidth}L{0.29\linewidth}Y@{}}
+  \toprule
+  线程块形状 & warp 内坐标变化 & 原例的判断\\
+  \midrule
+  \code{dim3(32, 8)} & 同一行内 $x$ 连续变化 & A 形成连续行访问。\\
+  \code{dim3(1, 32)} & $x$ 固定，$y$ 连续变化 & 交换索引后的 B 形成连续访问。\\
+  \code{dim3(16, 16)} & 两条 $x$ 行，各 16 个线程 & 对两个半 warp 分别展开地址。\\
+  \bottomrule
+  \end{tabularx}
+\end{table}
+\FloatBarrier
+
+\subsection{例题二：物理带宽与有效输入吞吐率}
+\subsubsection{保留题目中的全部假设}
+\par\noindent\begin{minipage}{\linewidth}
+每个 float 为 4 字节；输入起点按 512 字节对齐；流式输入数据起初不在缓存中；两次加载所需的每个 512 字节区域总共只读取一次；并发程度足以持续达到 $240\GBs$ 的物理读取流量；忽略其他流量。求理想的有效输入吞吐率。
+
+\begin{lstlisting}[caption={每个线程使用四个连续元素中的前两个。}]
+int i = blockIdx.x * blockDim.x + threadIdx.x;
+float temp = A[4 * i] + A[4 * i + 1];
+\end{lstlisting}
+\end{minipage}\par
+
+512 字节区域与 $240\GBs$ 均是这个题目的给定条件。有效吞吐率只统计上面两次加载真正使用的输入字节。
+
+\subsubsection{先在四元素组内计算有效比例}
+线程 $i$ 涉及的四元素组为
+\begin{equation}
+  A[4i],\ A[4i+1],\ A[4i+2],\ A[4i+3].
+\end{equation}
+实际只使用前两个元素，因此每 $4\times4=16\Bunit$ 的地址区间中，使用 $2\times4=8\Bunit$，另有 $8\Bunit$ 未用于该运算。
+
+\begin{table}[H]
+  \centering\small
+  \caption{一个16字节组中的有效输入位置。}
+  \begin{tabular}{@{}lcccc@{}}
+  \toprule
+  元素 & $A[4i]$ & $A[4i+1]$ & $A[4i+2]$ & $A[4i+3]$\\
+  \midrule
+  相对字节范围 & 0--3 & 4--7 & 8--11 & 12--15\\
+  是否用于 \code{temp} & 是 & 是 & 否 & 否\\
+  \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{再用一个512字节区域核对}
+取 $i=0,\ldots,31$。32 个线程覆盖 32 组、每组 16 字节，共
+\begin{equation}
+  D_{\mathrm{physical}}=32\times16=512\Bunit.
+\end{equation}
+每个线程使用两个 float，对应的有效输入为
+\begin{equation}
+  D_{\mathrm{useful}}=32\times2\times4=256\Bunit.
+\end{equation}
+于是有效字节比例为
+\begin{equation}
+  \eta=\frac{D_{\mathrm{useful}}}{D_{\mathrm{physical}}}
+  =\frac{256}{512}=\frac12.
+\end{equation}
+这里的两次加载共同使用同一个区域，题目规定这个区域只读取一次，所以物理字节数按 $512\Bunit$ 计。
+
+\subsubsection{将有效字节比例乘以物理带宽}
+设 $B_{\mathrm{physical}}$ 为物理读取带宽，$B_{\mathrm{useful}}$ 为有效输入吞吐率，则在题设条件下
+\begin{equation}
+  B_{\mathrm{useful}}=\eta B_{\mathrm{physical}}
+  =\frac12\times240\GBs
+  =\boxed{120\GBs}.
+\end{equation}
+这个结果保留了题目的“理想有效输入吞吐率”口径：物理接口仍按每秒 240 GB 读取，但其中一半字节用于指定的两个输入元素。
+
+\begin{keybox}[title={两道例题的共同计算方法}]
+先根据实际线程布局展开同一次访问的地址，再对照题目给出的传输区域统计有效字节。第一题强调 launch 决定 warp 坐标关系；第二题强调所用字节数与所传字节数共同决定有效输入吞吐率。
+\end{keybox}
+\FloatBarrier

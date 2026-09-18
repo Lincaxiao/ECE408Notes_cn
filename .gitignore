@@ -1,0 +1,73 @@
+# Operating system and editor files
+.DS_Store
+._*
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+~$*
+
+# LaTeX build products (reading PDFs are included below)
+TexOutput/
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.log
+*.lol
+*.lot
+*.nav
+*.out
+*.run.xml
+*.snm
+*.synctex*
+*.toc
+*.vrb
+*.xdv
+*.dvi
+
+# Keep authored reading PDFs and figure assets; raw slides stay local
+*.pdf
+!/ECE408.pdf
+!/Lecture*/ECE408_L*_CN.pdf
+!/Lecture*/assets/*.pdf
+
+# Local scratch space, imported archives, and previous drafts
+/tmp/
+/Transcript/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.bak
+*.orig
+/Lecture*/ECE408-LEC*_polished.md
+/Lecture3/README_CN.md
+/Lecture*/sources/original_*
+
+# Machine-specific review records and regenerated validation output
+/Lecture*/REVIEW_LOG.md
+/Lecture*/verification.json
+/Lecture*/code/validation_results.json
+
+# Compiled examples and Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.o
+*.obj
+*.so
+*.dylib
+*.exe
+/Lecture*/code/convolution_examples
+
+# Local credentials and environment settings
+.env
+.env.*
+!.env.example

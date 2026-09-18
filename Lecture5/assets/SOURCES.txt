@@ -1,0 +1,10 @@
+Source: ece408-lecture5-CUDA-memory-model-vk-FL26.pdf
+Coordinates are in PDF points on the original 960 x 540 pages; rasterization is 216 dpi.
+p05_von_neumann.png | page 5 | crop (530, 95, 945, 485). Stray words from the adjacent text column were masked outside the diagram: x=530..574, y=95..374.
+p10_programmer_memory.png | page 10 | crop (515, 120, 900, 453).
+p11_gpu_hierarchy.png | page 11 | crop (348, 112, 933, 485). Architecture diagram only; latency labels are discussed in the text.
+p14_matmul_geometry.png | page 14 | crop (485, 105, 901, 505).
+p19_output_tiles_2.png | page 19 | crop (552, 151, 866, 455).
+p20_output_tiles_4.png | page 20 | crop (552, 151, 866, 455).
+p23_block00.png | page 23 | crop (538, 94, 878, 505).
+p32_roofline.png | page 32 | crop (194, 287, 754, 510).

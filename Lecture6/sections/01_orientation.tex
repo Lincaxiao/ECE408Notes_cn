@@ -1,0 +1,46 @@
+\Needspace{9\baselineskip}
+\section{课程事项与核心内容}
+
+\subsection{学习目标与课程事项}
+学习目标为：为 Lab 3 的分块矩阵乘法做准备，处理分块算法的边界条件，以及评估分块带来的收益。技术内容围绕同一个计算问题展开：将矩阵乘法中的输入复用转化为较少的全局内存访问，同时保证线程协作的正确性。
+
+\subsubsection{作业与阅读安排}
+以下课程事项对应 2026 年 9 月 10 日。Lab 1 在当周周五截止，要求先完成 Lab 0，且 Lab 1 不计入最终成绩。阅读材料为教材第 5 章；待办事项包括获取 Delta 账号、设置 GitHub，以及提交 Labs 0 和 1。
+
+实验和项目的通常截止时间为周五 20:00，默认提供三天宽限期：周一 20:00 前提交仍可获得完整分数，无需提前通知。若需要超过三天的宽限期，必须在周五 20:00 前，通过邮件向负责相应作业的助教提出申请；是否批准取决于具体特殊情况，超过这一申请时间的请求不予考虑。最低分的一次实验会从总评中剔除；在上述延期政策之外，实验和项目不再接受逾期提交。
+
+\subsubsection{概念关系}
+全局内存带宽限制了数据供给速度；共享内存使线程块可以显式保存并复用一小块输入。矩阵乘法沿内积维度逐块累加，形成“协作加载—同步—局部计算—同步”的循环。边界处理维持这一循环的统一结构，性能分析则比较数据复用与线程块资源消耗。
+
+\subsection{Delta 命令行支持工具}
+\subsubsection{启动与用途}
+\par\noindent\begin{minipage}{\linewidth}
+命令行支持代理可协助排查 Delta 使用问题，例如实验无法运行、SLURM 作业状态查询，也可辅助实验代码编写。使用前查看 \code{lab1} 目录下的 \code{hpcGPT.md}。启动命令为：
+
+\begin{lstlisting}[language=bash,numbers=none]
+module load hpc-gpt/1.18.23-l
+opencode
+\end{lstlisting}
+\end{minipage}\par
+该模块版本对应 2026 年 9 月 10 日的支持工具入口。
+
+内存分配示例涉及三个数组：两个输入和一个输出都需要对应的设备端空间。分配量由元素个数乘以 \code{sizeof(float)} 得到，单位是字节；CUDA 分配函数需要设备指针的地址，以便把分配结果写回该指针。
+
+\Needspace{17\baselineskip}
+\subsubsection{内置命令}
+输入 \code{/} 可以调出内置命令列表。下表按用途归类保留命令及其含义。
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}p{0.14\linewidth}Y@{}}
+\toprule
+用途 & 命令与含义 \\
+\midrule
+会话与目录 & \code{/new} 新会话；\code{/sessions} 切换会话；\code{/move} 更换项目目录；\code{/exit} 退出。\\
+代理与连接 & \code{/agents} 切换代理；\code{/models} 切换模型；\code{/connect} 连接提供方；\code{/mcps} 切换 MCP。\\
+作业与状态 & \code{/jobs} 显示或隐藏侧栏 SLURM 作业；\code{/jobs-refresh} 立即刷新作业；\code{/status} 查看状态。\\
+编辑与检查 & \code{/editor} 打开编辑器；\code{/diff} 查看差异；\code{/review} 检查变更，支持 commit、branch、pr，默认检查未提交变更。\\
+配置与帮助 & \code{/init} 引导设置 \code{AGENTS.md}；\code{/skills} 查看技能；\code{/themes} 主题；\code{/help} 帮助。\\
+诊断与反馈 & \code{/debug} 调试信息；\code{/feedback} 附带当前对话提交反馈；\code{/report} 向 Delta 支持团队报告问题。\\
+\bottomrule
+\end{tabularx}
+\end{center}

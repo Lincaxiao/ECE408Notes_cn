@@ -1,0 +1,128 @@
+\section{阿姆达尔定律：整体加速比的串行上界}
+\label{l1:sec:amdahl}
+
+\subsection{问题设定与符号}
+
+考虑一个固定规模的应用，其原始串行执行时间为 $t$。把原始时间按能否被目标并行化方法加速分成两部分：
+\begin{itemize}
+  \item 可并行部分占比为 $p$，原始耗时为 $pt$；
+  \item 不可并行部分占比为 $1-p$，原始耗时为 $(1-p)t$；
+  \item 可并行部分经过并行化后获得局部加速比 $s$，因此其新耗时为 $pt/s$。
+\end{itemize}
+
+这里 $0\le p\le 1$，$s\ge 1$。该模型假设问题规模固定，并暂时不单独计入内核启动、数据传输、同步与通信等额外开销。
+
+\subsection{总执行时间的推导}
+
+不可并行部分没有被加速，因此仍需 $(1-p)t$；可并行部分缩短为 $pt/s$。新程序的总执行时间为
+\begin{equation}
+  T_{\mathrm{new}}
+  =(1-p)t+\frac{pt}{s}
+  =\left(1-p+\frac{p}{s}\right)t.
+  \label{l1:eq:amdahl-time}
+\end{equation}
+
+整体加速比定义为原始执行时间与新执行时间之比：
+\begin{equation}
+  S(p,s)
+  =\frac{t}{T_{\mathrm{new}}}
+  =\frac{t}{\left(1-p+\frac{p}{s}\right)t}
+  =\boxed{\frac{1}{1-p+\frac{p}{s}}}.
+  \label{l1:eq:amdahl-speedup}
+\end{equation}
+
+原始时间 $t$ 在分子与分母中约去，因此在这一固定比例模型中，整体加速比只由可并行比例 $p$ 和局部加速比 $s$ 决定。
+
+\subsection{并行部分无限快时的上界}
+
+即使可并行部分被理想化为瞬间完成，即 $s\to\infty$，仍有
+\begin{equation}
+  \lim_{s\to\infty}S(p,s)
+  =\frac{1}{1-p}.
+  \label{l1:eq:amdahl-limit}
+\end{equation}
+
+式~\eqref{l1:eq:amdahl-limit} 是阿姆达尔定律最重要的含义：整体加速比由未被加速的串行比例限制。可并行部分继续变快时，它在总时间中的占比越来越小，最终总时间几乎全部由串行部分构成。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.91\textwidth]{amdahl_law_slide.png}
+  \caption{阿姆达尔定律推导}
+\end{figure}
+
+\subsection{示例：90\% 可并行，局部加速 1000 倍}
+
+\begin{examplebox}
+原程序串行运行时间为 $t=100\,\mathrm{s}$，可并行比例为 $p=0.9$，可并行部分在图形处理器上获得 $s=1000$ 的加速。求新执行时间与整体加速比。
+
+串行部分原本占 10\%，因此保持为
+\begin{equation*}
+  (1-p)t=(1-0.9)\times 100\,\mathrm{s}=10\,\mathrm{s}.
+\end{equation*}
+
+可并行部分原本耗时 $90\,\mathrm{s}$，加速 1000 倍后为
+\begin{equation*}
+  \frac{pt}{s}
+  =\frac{0.9\times100\,\mathrm{s}}{1000}
+  =0.09\,\mathrm{s}.
+\end{equation*}
+
+所以
+\begin{equation*}
+  T_{\mathrm{new}}=10\,\mathrm{s}+0.09\,\mathrm{s}=10.09\,\mathrm{s},
+\end{equation*}
+\begin{equation*}
+  S=\frac{100\,\mathrm{s}}{10.09\,\mathrm{s}}
+  \approx 9.91.
+\end{equation*}
+
+尽管局部加速比达到 1000，整体加速比仍只有约 $9.91$。若把可并行部分变为无限快，整体上界也只是
+\begin{equation*}
+  S_{\max}=\frac{1}{1-0.9}=10.
+\end{equation*}
+\end{examplebox}
+
+\subsection{串行比例对上界的高度敏感性}
+
+\begin{table}[H]
+\centering
+\caption{不同可并行比例对应的理想整体加速上界}
+\begin{tabular}{ccc}
+\toprule
+\textbf{可并行比例 $p$} & \textbf{串行比例 $1-p$} & \textbf{$s\to\infty$ 时的上界 $1/(1-p)$} \\
+\midrule
+0.50 & 0.50 & $2$ \\
+0.90 & 0.10 & $10$ \\
+0.95 & 0.05 & $20$ \\
+0.99 & 0.01 & $100$ \\
+0.999 & 0.001 & $1000$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+要获得数量级更高的整体加速，串行比例必须按同样数量级下降。理想情况下，若希望整体加速达到 $S_{\mathrm{target}}$，至少需要
+\begin{equation*}
+  1-p\le \frac{1}{S_{\mathrm{target}}}.
+\end{equation*}
+例如，100 倍加速要求串行比例不超过 1\%；有限的局部加速和额外开销会使实际要求更严格。许多大数据集应用的可并行比例可以超过 99\%，因此超过 100 倍的加速在合适条件下可以实现。
+
+\subsection{为什么先做性能剖析}
+
+假设某函数占总时间的比例为 $p$，对该函数的任何局部优化都受式~\eqref{l1:eq:amdahl-speedup}约束。因此，性能剖析的作用不是只找“看起来复杂”的代码，而是确定哪些部分具有足够大的时间占比。优化低占比部分，即使局部加速很高，整体收益也会被阿姆达尔定律压缩。
+
+反过来，当并行部分已经极快时，原先不起眼的串行初始化、数据准备、输出或同步会成为新的热点。性能优化因此具有阶段性：每消除一个瓶颈，时间分布都会改变，需要重新剖析，而不能永久沿用最初的热点排序。
+
+\subsection{模型边界与现实开销}
+
+实际异构程序通常还包含图形处理器内核启动、中央处理器与图形处理器之间的数据移动、同步、资源争用和调度开销。若把这些额外时间记为 $T_{\mathrm{overhead}}$，则更现实的表达为
+\begin{equation}
+  S_{\mathrm{real}}
+  =\frac{t}{(1-p)t+\frac{pt}{s}+T_{\mathrm{overhead}}}.
+  \label{l1:eq:amdahl-overhead}
+\end{equation}
+
+式~\eqref{l1:eq:amdahl-overhead} 在基本模型中加入了显式开销。它说明，即使 $p$ 很大，问题规模过小也可能无法抵消固定开销；提高局部内核速度之后，数据移动与同步可能主导总时间。这与第~\ref{l1:eq:effective-bandwidth} 式所描述的有效带宽问题以及资源争用问题相互关联。
+
+\begin{keybox}
+阿姆达尔定律给出的优化顺序是：先找到占比最大的可加速部分，同时持续削减不可并行与协调开销；局部加速达到很高后，必须重新测量，因为瓶颈会迁移到之前占比很小的部分。整体性能永远由完整执行路径决定。
+\end{keybox}

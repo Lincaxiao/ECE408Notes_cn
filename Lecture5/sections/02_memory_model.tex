@@ -1,0 +1,138 @@
+
+\section{从处理器执行到 CUDA 存储层次}
+
+\subsection{数据为什么必须先进入寄存器}
+
+\subsubsection{冯·诺依曼模型中的计算与存储}
+\term{冯·诺依曼模型}{Von Neumann model}将计算机划分为处理单元、存储器、输入输出子系统和控制单元。\term{处理单元}{processing unit, PU}中的\term{算术逻辑单元}{arithmetic logic unit, ALU}执行算术与逻辑操作，\term{寄存器堆}{register file}保存正在参与运算的数据。存储器同时保存程序指令和数据；\term{输入输出子系统}{I/O subsystem}负责与外部环境通信；\term{控制单元}{control unit, CU}协调指令执行。
+
+在这一执行模型下，运算的操作数位于寄存器中。存储器里的数据需要先装入寄存器，指令也需要从存储器取出并装入\term{指令寄存器}{instruction register, IR}。因此，一条高级语言表达式中的“取值”和“计算”，在执行层面对应不同的工作。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.48\textwidth]{p05_von_neumann.png}
+\caption{处理单元通过寄存器保存工作数据，控制单元协调存储、运算与输入输出。图中的 PC 为程序计数器，IR 为指令寄存器。}
+\label{l5:fig:von-neumann}
+\end{figure}
+
+\subsubsection{ADD 与 LOAD 的区别}
+\par\noindent\begin{minipage}{\linewidth}
+指令处理可分为\term{取指}{fetch}、\term{译码}{decode}、\term{执行}{execute}和\term{访存}{memory}几个阶段。三类指令分别承担运算、数据传输与控制流功能。下面两条 LC-3 指令用于说明寄存器运算与数据装载的差别。
+
+\begin{lstlisting}[language={},numbers=none]
+ADD R1, R2, R3
+LDR R4, R6, #3
+\end{lstlisting}
+\end{minipage}\par
+\code{ADD R1, R2, R3} 读取 R2 和 R3，进行加法，再把结果写入 R1。两个输入都已在寄存器中，其数据运算不需要再从数据存储器读取操作数。用寄存器内容 $R_i$ 表示，可写为
+\[
+R_1\leftarrow R_2+R_3.
+\]
+\code{LDR R4, R6, #3} 先读取 R6，将其内容加上偏移量 3，形成有效地址，再从该地址读出数据并写入 R4。若 $\operatorname{Mem}[a]$ 表示地址 $a$ 处的内容，则
+\[
+a\leftarrow R_6+3,\qquad R_4\leftarrow\operatorname{Mem}[a].
+\]
+两条指令本身都需要被取出和译码；差别在于 LOAD 还显式访问其计算出的数据地址。这里的 3 保留 LC-3 示例中的地址偏移含义，不将其转换为 CUDA 数组的字节步长。
+
+\subsubsection{延迟与容量的差别}
+寄存器接近运算单元，适合保存当前工作值；主存容量大，适合保存完整数据集。简化的数量级对照为：寄存器访问约 1 个周期，内存访问约数百个周期；CPU 的寄存器数量为数百量级，GPU 的每个\term{流式多处理器}{streaming multiprocessor, SM}拥有 $O(10^4)$ 量级的寄存器，而内存容量可达到 GB 或更大。
+
+\begin{keybox}[title={从计算式看数据流}]
+对于“从数组读取两个数并相乘累加”，数据先被读入可供运算使用的寄存器，再进行乘法和累加。反复使用已经取到的工作值，可以减少再次读取远端存储器的需求。CUDA 的不同存储空间，为线程私有工作值、块内协作和大规模数据集提供了不同的位置。
+\end{keybox}
+
+\subsection{线程、线程块与设备的可见范围}
+
+存储空间可以从两个角度理解：\term{作用域}{scope}决定哪些线程能够访问同一份数据；\term{物理位置}{physical location}决定数据处于 SM 内部、设备内存，还是相应的缓存路径。变量的\term{生命周期}{lifetime}则表示这份存储随线程、线程块或应用程序存在的时间范围。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.61\textwidth]{p10_programmer_memory.png}
+\caption{线程持有自己的寄存器，同一线程块的线程共同访问该块的共享内存；全局内存与常量内存对网格中的线程可见。}
+\label{l5:fig:programmer-memory}
+\end{figure}
+
+\subsubsection{线程私有：寄存器与局部内存}
+\term{寄存器}{registers}保存单个线程的私有工作值，访问延迟最低。例如，矩阵乘法中的累加器只需要由当前线程更新，适合用一个自动标量变量表示，其典型位置就是寄存器。
+
+\term{局部内存}{local memory}同样属于单个线程的私有地址空间，但物理上由设备内存支持，并通常经过 L1/L2 缓存。较大的自动对象，以及\term{寄存器溢出}{register spill}所需的存储，都可能使用这一空间。这里的 local 描述的是线程私有的\emph{作用域}，物理位置仍然可能远离运算单元。
+
+这一区分直接影响对代码的理解：两个变量都只在一个线程中使用，并不代表它们具有相同的访问代价。自动标量通常使用寄存器；线程私有数组可能使用寄存器，也可能使用局部内存，具体分配由编译器处理。
+
+\subsubsection{块内共享：共享内存}
+\term{共享内存}{shared memory}位于 SM 上，由同一\term{线程块}{thread block}中的线程共同访问，生命周期与线程块对应。不同线程块各自拥有独立的共享内存存储。
+
+共享内存适合承担块内协作和数据复用：某个线程把数据写入本块的共享内存后，其他需要该数据的块内线程可以从这份共享存储中读取。因而，当多个线程需要反复使用相同输入时，共享内存提供了显式组织复用的位置。共享内存分块矩阵乘法利用这一机制组织输入复用。
+
+\subsubsection{设备可见：全局内存与常量内存}
+\term{全局内存}{global memory}对设备上的线程可见，适合保存主数据集，例如输入矩阵与输出矩阵。它支持线程读取和写入，容量大，但访问延迟高。代码中的全局地址访问也可能由缓存提供数据，因此其请求与最终到达设备内存的流量需要分开计数。
+
+\term{常量内存}{constant memory}保存设备线程只读的数据，并通过\term{常量缓存}{constant cache}加速访问。\term{广播或一致访问}{broadcast / uniform access}，即多个线程读取相同的数据，是它特别适合的访问情形。全局内存和常量内存的可见范围都可以覆盖一个网格；对设备变量而言，其生命周期在声明表中列为应用程序级。
+
+\subsection{物理层次、缓存与访问代价}
+
+\subsubsection{从 SM 到设备内存}
+在硬件视图中，每个 SM 内部具有寄存器、共享内存、L1 缓存与常量缓存；多个 SM 通过下一级 L2 缓存访问全局内存。\term{缓存}{cache}保存已访问数据的副本，使后续访问有机会在更接近计算单元的位置得到响应。局部内存与全局内存的访问流量都可以经过缓存。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{p11_gpu_hierarchy.png}
+\caption{寄存器与块内共享存储位于 SM 内部，L2 缓存位于多个 SM 与全局内存之间。寄存器、共享内存与缓存分别承担不同的数据保存与复用任务。}
+\label{l5:fig:physical-memory}
+\end{figure}
+
+\begin{table}[H]
+\centering\small
+\caption{CUDA 存储层次的作用域、位置与管理方式。}
+\begin{tabularx}{\textwidth}{L{0.13\textwidth} L{0.11\textwidth} L{0.23\textwidth} L{0.15\textwidth} Y}
+\toprule
+类型 & 作用域 & 典型位置 & 管理方式 & 主要用途 \\
+\midrule
+寄存器 & 线程 & SM & 编译器 & 私有工作值 \\
+局部内存 & 线程 & 设备内存及缓存 & 编译器 & 溢出、较大自动对象 \\
+共享内存 & 块 & SM & 程序员 & 块内协作与复用 \\
+全局内存 & 设备/网格 & HBM / DRAM & 程序员 & 主数据集 \\
+常量内存 & 设备/网格 & DRAM 与常量缓存 & 程序员 & 一致的只读数据 \\
+L1 / L2 & 缓存层 & 片上 & 主要由硬件 & 缓存全局/局部访问 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+这里“程序员管理”指需要在程序中安排相应存储及数据使用；寄存器与局部内存之间的自动变量分配则主要由编译器处理。
+
+\subsubsection{周期数的使用范围}
+简化的程序员视图给出寄存器约 1 周期、共享内存约 5 周期、全局内存约 500 周期，以及命中缓存的常量内存约 5 周期。硬件层次图另将共享内存和常量缓存标为数十周期、全局内存标为数百周期。
+
+这些示意值用于建立层次之间的代价差别：寄存器访问最快，片上共享存储与缓存提供较低延迟，设备内存访问具有更高延迟。两个图的数值口径分别保留，不能从中得到某一指定 GPU 上各类访问的固定延迟。
+
+\subsection{声明限定符与变量生命周期}
+
+\subsubsection{从声明读出存储空间}
+CUDA \term{类型限定符}{type qualifiers}让变量声明表达其存储属性。下表中的设备变量声明对应设备侧存储；函数内没有限定符的自动变量则按线程独立产生。
+
+\begin{table}[H]
+\centering\small
+\caption{变量声明、典型存储空间与生命周期。}
+\begin{tabularx}{\textwidth}{L{0.43\textwidth} L{0.19\textwidth} L{0.12\textwidth} Y}
+\toprule
+声明形式 & 存储空间 & 作用域 & 生命周期 \\
+\midrule
+\code{__device__ int globalVar;} & 全局 & 设备/网格 & 应用程序 \\
+\makecell[l]{\code{__device__ __constant__}\\\code{int constantVar;}} & 常量 & 设备/网格 & 应用程序 \\
+\makecell[l]{\code{__device__ __shared__}\\\code{int sharedVar;}} & 共享 & 块 & 块 \\
+\code{int localVar;} & 通常为寄存器 & 线程 & 线程 \\
+\code{int localArr[N];} & 寄存器或局部内存 & 线程 & 线程 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+声明中若已有 \mbox{\code{__shared__}} 或 \mbox{\code{__constant__}}，可以省略 \mbox{\code{__device__}}。
+
+单独使用 \mbox{\code{__device__}} 的变量声明不能放在函数内部。表中的 $N$ 表示数组长度。
+
+\subsubsection{自动变量与线程私有状态}
+设一个 kernel 中声明了 \code{int Row;} 和 \code{float Pvalue;}。每个线程都有自己的行索引和累加器：线程 A 更新其 \code{Pvalue}，不会因此更新线程 B 的 \code{Pvalue}。这正是用一个线程独立计算一个输出元素所需的私有状态。
+
+当一个线程块中声明了共享变量，该块内的线程共同使用这份存储；另一个块中的同名共享变量属于另一个独立实例。因而，变量名相同与物理上访问同一份数据之间的关系，取决于变量所属的存储空间和作用域。
+
+\begin{keybox}[title={判断变量的三个问题}]
+先确定谁需要访问它，再确定它的典型物理位置，最后检查它需要存在多久。线程私有工作值、块内共享中间结果、设备可见的大型输入输出，在这三个问题上分别对应不同的选择。
+\end{keybox}

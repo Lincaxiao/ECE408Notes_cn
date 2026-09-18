@@ -1,0 +1,38 @@
+\Needspace{9\baselineskip}
+\section{关键结论与公式汇总}
+
+\subsection{机制之间的联系}
+\subsubsection{复用决定分块的收益}
+矩阵乘法的同一个输入会服务于多个输出。一个 $T\times T$ 线程块先协作加载 $2T^2$ 个输入，再计算 $2T^3$ 个浮点运算，将块内输入复用转化为约 $T$ 倍的全局加载量缩减。
+
+\subsubsection{同步决定共享缓冲区的正确使用}
+共享数组在空间上由多个线程共同使用，在时间上由多个分块轮次复用。第一次屏障保护当前数据的完整加载，第二次屏障保护当前数据的完整使用。两次屏障分别对应这两类依赖。
+
+\subsubsection{边界处理决定协作任务能否保留}
+每个线程的 $A$ 加载、$B$ 加载和 $C$ 写回具有不同的有效性条件。加载阶段写零，使内积循环保持统一；输出阶段做有效性判断，使越界线程保留协作职责而不写入非法输出位置。
+
+\subsubsection{资源约束决定复用能否转化为性能}
+分块增大使计算强度线性增长，同时使每块线程数和共享内存需求按平方增长。带宽、计算峰值、驻留线程块数量以及寄存器需求，共同影响最终的执行速度。
+
+\subsection{关键公式}
+以下使用 $A\in\mathbb{R}^{M\times K}$、$B\in\mathbb{R}^{K\times N}$、$C\in\mathbb{R}^{M\times N}$，分块边长为 $T$。
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}p{0.26\linewidth}Y@{}}
+\toprule
+对象 & 表达式 \\
+\midrule
+线程对应输出 & $r=b_yT+t_y,\quad c=b_xT+t_x$。\\
+输出网格尺寸 & $n_x=\lceil N/T\rceil,\quad n_y=\lceil M/T\rceil$。\\
+内积方向轮数 & $Q=\lceil K/T\rceil$。\\
+$A$ 加载地址与条件 & $rK+qT+t_x$；$r<M$ 且 $qT+t_x<K$。\\
+$B$ 加载地址与条件 & $(qT+t_y)N+c$；$qT+t_y<K$ 且 $c<N$。\\
+共享内积 & $\sum_{k=0}^{T-1}A_s[t_y][k]B_s[k][t_x]$。\\
+输出地址与条件 & $rN+c$；$r<M$ 且 $c<N$。\\
+每块线程与共享容量 & $T^2$ 个线程，$8T^2$ 字节共享内存。\\
+理想输入计算强度 & $I_T=T/4\ \mathrm{FLOP/B}$。\\
+简化性能上界 & $P_T\le\min(P_{\mathrm{peak}},B_{\mathrm{mem}}I_T)$。\\
+\bottomrule
+\end{tabularx}
+\end{center}
+计算强度的单精度假设、浮点计数与流量模型见第~\ref{l6:sec:performance}~节。

@@ -1,0 +1,150 @@
+\Needspace{9\baselineskip}
+\section{数据局部性与分块矩阵乘法}
+\label{l6:sec:tiling}
+
+\subsection{从内积计算到输入复用}
+\subsubsection{矩阵、线程与下标约定}
+先考虑两个 $N\times N$ 矩阵相乘，$C=AB$。采用与数组一致的零起始下标，有
+\begin{equation}
+ C_{r,c}=\sum_{j=0}^{N-1}A_{r,j}B_{j,c},
+ \qquad 0\le r,c<N.
+ \label{l6:eq:matmul}
+\end{equation}
+每个输出元素是 $A$ 的一行与 $B$ 的一列的内积。基本线程映射是：一个线程负责一个 $C_{r,c}$，在线程私有的累加变量中保存部分和，内积完成后写回一次。
+
+令 $T$ 表示方形分块的边长，对应代码中的 \code{TILE_DIM} 或 \code{TILE_WIDTH}。一个线程块含 $T\times T$ 个线程，负责一个同样大小的输出分块。线程块坐标为 $(b_x,b_y)$，块内线程坐标为 $(t_x,t_y)$；横坐标对应列，纵坐标对应行：
+\begin{equation}
+ r=b_yT+t_y,\qquad c=b_xT+t_x,
+ \qquad 0\le t_x,t_y<T.
+ \label{l6:eq:thread-map}
+\end{equation}
+后续使用 $q$ 表示沿内积方向的分块编号，$k$ 表示某一分块内部的内积下标，因此完整内积下标为 $j=qT+k$。这三个层次分别回答“哪个输出块”“哪个输出元素”和“当前使用哪一段输入”。
+
+\subsubsection{同一个输入服务于多个输出}
+固定 $r,j$，元素 $A_{r,j}$ 参与 $C$ 的第 $r$ 行全部 $N$ 个输出；固定 $j,c$，元素 $B_{j,c}$ 参与 $C$ 的第 $c$ 列全部 $N$ 个输出。因此，输入矩阵中每个元素都具有重复使用的机会。
+
+\begin{figure}[H]
+ \centering
+ \begin{subfigure}{0.47\linewidth}
+  \includegraphics[width=\linewidth]{reuse_A_p10.png}
+  \caption{$A$ 的一个元素服务于一行输出。}
+ \end{subfigure}\hfill
+ \begin{subfigure}{0.47\linewidth}
+  \includegraphics[width=\linewidth]{reuse_B_p11.png}
+  \caption{$B$ 的一个元素服务于一列输出。}
+ \end{subfigure}
+ \caption{矩阵乘法的输入复用关系。}
+ \label{l6:fig:reuse}
+\end{figure}
+
+当一个线程块负责 $T\times T$ 个输出时，同一行的 $T$ 个线程会使用相同的 $A$ 元素，同一列的 $T$ 个线程会使用相同的 $B$ 元素。将这些共同需要的输入保存在块内共享的存储区域，就能让一次全局加载支撑多次计算。
+
+\subsection{局部性与共享内存}
+\subsubsection{带宽为什么会限制运算速度}
+\term{全局内存}{global memory} 由 DRAM 实现。线程读取的数据有时已经位于 L1 缓存中；也可能在另一个线程再次使用之前被逐出。\term{共享内存}{shared memory} 为线程块提供一个显式管理的、较小而较快的数据区域，可以直接组织所需的复用。
+
+\term{数据局部性}{data locality} 在这里体现为：把一组即将反复访问的数据集中起来，在它们仍然可用时完成尽可能多的相关计算。按一次乘法和一次加法合计两个浮点运算计数，每个内积步读取两个 \code{float} 输入，需要 $8$ 字节，得到
+\begin{equation}
+ \frac{8\ \mathrm{B}}{2\ \mathrm{FLOP}}=4\ \mathrm{B/FLOP}.
+\end{equation}
+暂时忽略输出写回和缓存复用。对于计算峰值 $1000\,\mathrm{GFLOP/s}$、内存带宽 $150\,\mathrm{GB/s}$ 的示例 GPU，内存只能支撑
+\begin{equation}
+ \frac{150\ \mathrm{GB/s}}{4\ \mathrm{B/FLOP}}
+ =37.5\ \mathrm{GFLOP/s}.
+ \label{l6:eq:naive-bandwidth}
+\end{equation}
+计算单元即使具有更高峰值，也需要足够快的数据供给才能发挥作用。这组参数说明了带宽对数据供给的限制。
+
+\subsubsection{分块使数据复用成为显式协作}
+分块 (tiling) 将数据划分为能够放入共享内存的子集。线程块协作把当前子集从全局内存搬入共享内存，随后反复使用它完成计算，再处理下一组输入。在基本分块矩阵乘法中，每个线程每轮加载一个 $A$ 元素和一个 $B$ 元素，整个线程块共同填满两个 $T\times T$ 的共享数组。
+
+\begin{figure}[H]
+ \centering
+ \includegraphics[width=0.74\linewidth]{shared_tiling_p13.png}
+ \caption{多线程直接重复读取全局数据，以及经共享内存组织复用的两种访问方式。}
+ \label{l6:fig:shared}
+\end{figure}
+
+\begin{keybox}[title={数据的存放位置}]
+$A$、$B$ 的完整输入和 $C$ 的完整输出位于全局内存；当前两个输入分块位于共享内存；每个线程的部分和 \code{sum} 位于寄存器中。一个输出块的结果由该块全部线程的私有部分和共同构成。计算结束时，各线程把自己的最终结果直接写回 $C$。
+\end{keybox}
+
+\subsection{沿内积维度推进分块}
+\subsubsection{固定输出块，依次更换输入块}
+先假定 $N$ 是 $T$ 的整数倍。输出块的 $(b_x,b_y)$ 在整个核函数执行中保持不变，而输入分块随 $q=0,1,\ldots,N/T-1$ 推进。第 $q$ 轮使用 $A$ 的列区间 $[qT,(q+1)T)$ 和 $B$ 的行区间 $[qT,(q+1)T)$。
+
+把式~\eqref{l6:eq:matmul} 的求和下标写成 $j=qT+k$，得到与分块循环直接对应的等式：
+\begin{equation}
+ C_{r,c}=\sum_{q=0}^{N/T-1}\left(
+       \sum_{k=0}^{T-1}A_{r,qT+k}B_{qT+k,c}\right).
+ \label{l6:eq:tile-sum}
+\end{equation}
+内层求和产生一个部分内积，外层求和累加所有输入分块的贡献。此重排用于说明分块算法与原矩阵乘法的对应关系。
+
+\begin{figure}[H]
+ \centering
+ \includegraphics[width=0.97\linewidth]{input_tiles_p18.png}
+ \caption{一个输出块对应一对当前输入块；输入块位于共享内存，输出部分和位于各线程寄存器。}
+ \label{l6:fig:tile-storage}
+\end{figure}
+
+\subsubsection{协作加载的二维索引}
+线程 $(t_x,t_y)$ 把两个输入元素分别写入共享数组的同一个局部位置 $[t_y][t_x]$：
+\begin{align}
+ A_s[t_y][t_x]&\leftarrow A[r][qT+t_x],\\
+ B_s[t_y][t_x]&\leftarrow B[qT+t_y][c].
+ \label{l6:eq:tile-load-2d}
+\end{align}
+对于 $A$，全局行号固定在当前输出行，沿列方向推进分块；对于 $B$，全局列号固定在当前输出列，沿行方向推进分块。因此，$A$ 的内积方向由 $t_x$ 定位，$B$ 的内积方向由 $t_y$ 定位。
+
+第 $0$ 轮分别读取 $A[r][t_x]$、$B[t_y][c]$；第 $1$ 轮分别读取 $A[r][T+t_x]$、$B[T+t_y][c]$。块内所有线程联合覆盖整对输入分块。加载阶段还应使同一 warp 中的访问便于合并访问 (coalesced access)。
+
+\subsubsection{行主序的一维地址}
+\par\noindent\begin{minipage}{\linewidth}
+行主序 (row-major order) 将每一行连续存放。对于列数为 $N$ 的数组，二维位置 $(i,j)$ 的一维偏移为 $iN+j$。式~\eqref{l6:eq:tile-load-2d} 因而变为：
+
+\begin{lstlisting}[numbers=none]
+A_s[ty][tx] = A[row * N + q * TILE_DIM + tx];
+B_s[ty][tx] = B[(q * TILE_DIM + ty) * N + col];
+\end{lstlisting}
+\end{minipage}\par
+$A$ 中的 $qT+t_x$ 已经是列偏移，无需再乘以行宽；$B$ 中的 $qT+t_y$ 是行号，必须先乘以行宽。共享数组在声明时具有二维形状，可以继续使用二维下标。
+
+\begin{figure}[H]
+ \centering
+ \includegraphics[width=0.97\linewidth]{indexing_p24.png}
+ \caption{输出块坐标固定，$A$ 的输入块向右移动，$B$ 的输入块向下移动；两者由同一分块编号 $q$ 控制。}
+ \label{l6:fig:tile-index}
+\end{figure}
+
+\subsubsection{计算时读取共享行与共享列}
+\par\noindent\begin{minipage}{\linewidth}
+分块加载完成后，线程 $(t_x,t_y)$ 按自己的输出位置读取共享数组的一行与一列：
+
+\begin{lstlisting}[numbers=none]
+for (int k = 0; k < TILE_DIM; ++k) {
+    sum += A_s[ty][k] * B_s[k][tx];
+}
+\end{lstlisting}
+\end{minipage}\par
+将加载定义代入可验证，每一步使用的恰好是
+\[
+ A_s[t_y][k]B_s[k][t_x]
+ =A_{r,qT+k}B_{qT+k,c}.
+\]
+加载时，线程负责 $[t_y][t_x]$ 这个存储位置；计算时，它需要由多个线程加载的共享行和共享列。正是这一区分使协作加载产生复用，也使线程间同步成为必要条件。
+
+\begin{derivationbox}[title={例：一个线程在加载与计算中的不同职责}]
+取 $N=4$、$T=2$，考虑线程块 $(b_x,b_y)=(0,1)$ 中的线程 $(t_x,t_y)=(1,0)$。由式~\eqref{l6:eq:thread-map}，它负责 $C_{2,1}$。
+
+在 $q=0$ 时，该线程加载 $A_{2,1}$ 与 $B_{0,1}$，但其部分内积为
+\[
+ A_{2,0}B_{0,1}+A_{2,1}B_{1,1}.
+\]
+其中 $A_{2,0}$ 和 $B_{1,1}$ 由其他线程加载。在 $q=1$ 时，该线程加载 $A_{2,3}$ 与 $B_{2,1}$，并累加
+\[
+ A_{2,2}B_{2,1}+A_{2,3}B_{3,1}.
+\]
+两轮得到完整的 $C_{2,1}$。该例用于逐项解释加载索引和计算索引，并沿用每线程一个输出的基本算法。
+\end{derivationbox}
+\FloatBarrier

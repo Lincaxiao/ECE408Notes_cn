@@ -1,0 +1,116 @@
+\section{运行时资源查询与例题}
+
+\subsection{运行时查询设备属性}
+
+\par\noindent\begin{minipage}{\linewidth}
+不同 GPU 架构的资源上限不同，因此程序不应把所有驻留限制都永久写死。CUDA 运行时提供 \code{cudaGetDeviceProperties} 查询设备属性：
+
+\begin{lstlisting}[caption={\texttt{cudaGetDeviceProperties} 函数原型}]
+cudaError_t cudaGetDeviceProperties(cudaDeviceProp* prop, int device);
+\end{lstlisting}
+\end{minipage}\par
+
+\par\noindent\begin{minipage}{\linewidth}
+基本用法如下：
+
+\begin{lstlisting}[caption={查询设备线程资源上限}]
+int devID = 0;
+cudaDeviceProp devProp;
+cudaGetDeviceProperties(&devProp, devID);
+
+int maxThreadsPerBlock = devProp.maxThreadsPerBlock;
+int maxThreadsPerMultiProcessor =
+    devProp.maxThreadsPerMultiProcessor;
+\end{lstlisting}
+\end{minipage}\par
+
+设备属性结构还可以提供线程束大小以及其他架构限制。程序可以据此选择更合适的启动配置，而不是假设未来设备与当前设备拥有完全相同的线程数、线程块数或线程束限制。
+
+\subsection{占用率计算工具}
+
+NVIDIA Nsight Compute 提供\term{占用率计算器}{Occupancy Calculator}，能够根据目标 GPU、每线程块线程数、每线程寄存器使用量、共享内存使用量等信息估算多处理器占用率。该工具替代了较早的 CUDA 占用率计算表格。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.78\textwidth]{occupancy_calculator_p32.png}
+  \caption{占用率计算器把线程块大小、寄存器和共享内存等静态资源需求映射为驻留线程束与线程块限制}
+\end{figure}
+
+占用率工具的价值在于快速识别明显的资源浪费或驻留瓶颈。它不能替代性能测量，因为高占用率只说明潜在的延迟隐藏能力较强，并不能说明实际瓶颈一定来自驻留线程束不足。
+
+\subsection{例题一：1536 线程与 4 线程块上限}
+
+某 CUDA 设备的每个流式多处理器最多驻留 1536 个线程，并且最多驻留 4 个线程块。比较每块 256、384、576 个线程，哪一种配置能在仅考虑这两个限制时填满线程容量？
+
+\begin{examplebox}[title=完整推导]
+\textbf{每块 256 线程：}
+\[
+\frac{1536}{256}=6.
+\]
+线程数允许 6 个线程块，但块数上限只有 4，因此实际最多驻留
+\[
+4\times256=1024
+\]
+个线程，不能填满 1536 线程容量。
+
+\textbf{每块 384 线程：}
+\[
+\frac{1536}{384}=4.
+\]
+恰好需要 4 个线程块，既满足线程数限制，也满足线程块数限制，驻留线程数为
+\[
+4\times384=1536.
+\]
+因此该配置在题目给定的简化限制下达到满线程容量。
+
+\textbf{每块 576 线程：}
+\[
+\left\lfloor\frac{1536}{576}\right\rfloor=2,
+\]
+只能驻留
+\[
+2\times576=1152
+\]
+个线程；第三个线程块会使线程总数超过 1536，所以不能填满容量。
+
+因此答案是 \textbf{384 线程/块}。
+\end{examplebox}
+
+\subsection{例题二：只知道流式多处理器和核心数，能否选出最佳配置}
+
+题目给定一个一维数组，每个元素由一个线程处理。目标 GPU 有 8 个流式多处理器，每个流式多处理器有 16 个流式处理器，问“最佳执行配置”是什么。
+
+仅凭这些信息无法确定。流式多处理器数量和核心数只描述部分物理执行资源；至少还缺少：
+
+\begin{itemize}
+  \item 每流式多处理器最大驻留线程数和最大驻留线程块数；
+  \item 每线程块最大线程数；
+  \item 寄存器与共享内存容量；
+  \item 该核函数每线程寄存器使用量和每线程块共享内存使用量；
+  \item 实际性能测量，用于判断瓶颈是否来自占用率、带宽或其他资源。
+\end{itemize}
+
+\begin{keybox}
+从“核心数”直接推导线程块大小是不充分的。CUDA 的启动配置同时受到驻留限制和核函数资源足迹约束，而最高理论占用率也不等价于最高实测性能。
+\end{keybox}
+
+\subsection{例题三：统一分支条件是否造成控制发散}
+
+\par\noindent\begin{minipage}{\linewidth}
+考虑核函数：
+
+\begin{lstlisting}[caption={统一分支条件的核函数}]
+__global__ void do_work(int q, int *A) {
+    int result = 0;
+    if (q < 5)
+        result = threadIdx.x;
+    A[threadIdx.x] = result;
+}
+\end{lstlisting}
+\end{minipage}\par
+
+问题是：条件 \code{q < 5} 是否造成控制发散？
+
+答案是\textbf{不会}。变量 \code{q} 是统一传入的标量参数，同一线程束中的线程对该条件得到相同结果。因此整个线程束要么都执行赋值语句，要么都跳过赋值语句。虽然赋值结果使用了每线程不同的 \code{threadIdx.x}，但这只意味着各线程处理不同数据，并不意味着控制路径不同。
+
+更一般地说，控制发散要求同一线程束的活动线程对分支谓词得到不同结果。分支条件不必显式包含线程索引才可能发散；只要它依赖的每线程数据不同，就可能造成发散。反之，即使分支语句存在，只要谓词在线程束内一致，就没有线程束内控制发散。

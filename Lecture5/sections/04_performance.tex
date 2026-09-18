@@ -1,0 +1,213 @@
+\Needspace{12\baselineskip}
+\section{访存量、算术强度与 Roofline 性能分析}
+
+\subsection{基本矩阵乘法为什么容易受带宽限制}
+
+\subsubsection{逐次迭代统计操作数与运算量}
+基本矩阵乘法将输出位置分配给大量线程，但每个线程在每次 $k$ 循环中都要读取 \code{d_M[Row * Width + k]} 和 \code{d_N[k * Width + Col]}。两个 \code{float} 元素各为 4 B，因此每次迭代请求 8 B 输入数据，同时执行一次浮点乘法和一次浮点加法。
+
+\term{浮点运算}{floating-point operation, FLOP}是这里的运算计数单位：一次乘法与一次加法合计 2 FLOP。将数据需求除以运算量，得到
+\begin{equation}
+R_{\mathrm{req}}
+=\frac{8\ \mathrm{B}}{2\ \mathrm{FLOP}}
+=4\ \mathrm{B/FLOP}.
+\label{l5:eq:byte-per-flop}
+\end{equation}
+其倒数是每读取一字节所完成的运算量，即\term{算术强度}{arithmetic intensity}。用 $I$ 表示，基本 kernel 在不计缓存复用、忽略最终写回的口径下有
+\begin{equation}
+I_{\mathrm{req}}=\frac{2}{8}
+=0.25\ \mathrm{FLOP/B}.
+\label{l5:eq:naive-intensity}
+\end{equation}
+
+设总浮点运算量为 $F$，源代码请求的总字节量为 $Q_{\mathrm{req}}$。保留最后一次输出写回时，计数可逐层展开如下。
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{L{0.29\textwidth} Y Y}
+\toprule
+计数范围 & 浮点运算量 & 请求的字节量 \\
+\midrule
+一个线程的一次 $k$ 迭代 & 2 FLOP & 8 B 输入 \\
+一个有效线程的完整点积 & $2W$ FLOP & $8W+4$ B \\
+整个 $W\times W$ 输出 & $F=2W^3$ FLOP & $Q_{\mathrm{req}}=8W^3+4W^2$ B \\
+\bottomrule
+\end{tabularx}
+\end{table}
+由此得到更完整的请求级算术强度
+\begin{equation}
+I_{\mathrm{req}}=\frac{2W^3}{8W^3+4W^2}
+=\frac{W}{4W+2}
+\xrightarrow[W\to\infty]{}\frac14\ \mathrm{FLOP/B}.
+\label{l5:eq:naive-exact}
+\end{equation}
+输出写入在总请求流量中的比例随 $W$ 增大而减小，因此大矩阵分析中忽略它，可以得到简洁的 $0.25$ FLOP/B 估计。
+
+\begin{keybox}[title={请求流量与设备内存流量}]
+上述 $Q_{\mathrm{req}}$ 统计各线程在代码中请求的操作数。缓存复用可以让多个请求由已缓存数据响应，使实际到达所建模存储层的字节量 $Q$ 减少。用设备内存带宽估计性能时，算术强度应按该层的 $I=F/Q$ 计算；忽略缓存复用时，才把上述请求计数作为该层流量的近似。
+\end{keybox}
+
+\subsubsection{150 GB/s 如何得到 37.5 GFLOP/s}
+考虑给定的示例处理器：计算吞吐上限为 $1000$ GFLOP/s，全局内存带宽为 $150$ GB/s。若每执行 1 FLOP 都需要从该层取得 4 B 数据，则内存每秒能支撑的运算量为
+\begin{equation}
+\frac{150\ \mathrm{GB/s}}{4\ \mathrm{B/FLOP}}
+=37.5\ \mathrm{GFLOP/s}.
+\label{l5:eq:150gb-example}
+\end{equation}
+也可以写成 $150\ \mathrm{GB/s}\times0.25\ \mathrm{FLOP/B}$。字节单位消去后，结果为运算吞吐率。
+
+这解释了瓶颈：计算单元每秒最多能够完成 1000 G 次浮点运算，但当前的数据需求让带宽只能支撑其中的 37.5 G 次。大量输出线程提供了并行任务，却没有减少每单位计算需要搬运的数据。
+
+在这一示例中，37.5 GFLOP/s 是按给定访存模型得到的带宽上限；原材料给出的执行表现约为 25 GFLOP/s，并解释为内存并非始终处于满负荷状态。提高性能的方向是减少重复的全局数据访问，使每次搬入的数据参与更多运算。上述数值均属于该教学示例。
+
+\subsection{从两个峰值建立 Roofline 模型}
+
+\subsubsection{运算吞吐率与内存带宽}
+\term{浮点运算吞吐率}{FLOPS rate}表示每秒能够完成多少浮点运算，单位为 FLOP/s。\term{内存带宽}{memory bandwidth}表示每秒能够提供多少数据，单位为 B/s。前者度量计算供给，后者度量数据供给。
+
+用 $C_{\mathrm{peak}}$ 表示峰值计算吞吐率，$B_{\mathrm{peak}}$ 表示所建模存储层的峰值带宽；设一个 kernel 的总工作量为 $F$ FLOP，在该层传输 $Q$ B 数据，执行时间为 $t$。则算术强度和实际运算吞吐率分别为
+\begin{equation}
+I=\frac FQ\quad(\mathrm{FLOP/B}),\qquad
+\mathcal P=\frac Ft\quad(\mathrm{FLOP/s}).
+\label{l5:eq:metric-defs}
+\end{equation}
+$F$ 是运算\emph{总量}，$\mathcal P$ 是运算\emph{速率}；相应地，$Q$ 是数据总量，$Q/t$ 是平均数据传输速率。计算例子中的 G 和 T 按十进制量级 $10^9$、$10^{12}$ 使用。
+
+\subsubsection{性能上限与时间下限}
+计算单元提供了 $C_{\mathrm{peak}}$ 的吞吐上限；内存以 $B_{\mathrm{peak}}$ B/s 供给数据，每字节可支持 $I$ FLOP，因而给出 $B_{\mathrm{peak}}I$ 的另一条上限。两项限制必须同时满足：
+\begin{equation}
+\boxed{\mathcal P\le
+\min\!\left(C_{\mathrm{peak}},B_{\mathrm{peak}}I\right).}
+\label{l5:eq:roofline}
+\end{equation}
+这就是\textbf{Roofline \term{模型}{roofline model}}的基本关系。
+
+用执行时间表达同一限制，计算所需时间至少为 $F/C_{\mathrm{peak}}$，数据传输所需时间至少为 $Q/B_{\mathrm{peak}}$，因此
+\begin{equation}
+\boxed{t\ge t_{\min}
+=\max\!\left(\frac{F}{C_{\mathrm{peak}}},
+             \frac{Q}{B_{\mathrm{peak}}}\right).}
+\label{l5:eq:time-bound}
+\end{equation}
+这里取两项的最大值，表达两条下限必须同时成立；该式没有把两个阶段假定为必然串行。即便达到较小的一项，仍须满足较大的时间需求。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{p32_roofline.png}
+\caption{横轴为算术强度，纵轴为运算吞吐率。斜线给出带宽限制，水平线给出计算限制；可达到的性能位于两条限制的下方。}
+\label{l5:fig:roofline}
+\end{figure}
+
+\subsubsection{屋脊点与受限类型}
+两条上限相交的位置称为\term{屋脊点}{ridge point}。令 $C_{\mathrm{peak}}=B_{\mathrm{peak}}I_*$，得到
+\begin{equation}
+I_*=\frac{C_{\mathrm{peak}}}{B_{\mathrm{peak}}}.
+\label{l5:eq:ridge}
+\end{equation}
+当 $I<I_*$ 时，带宽提供的性能上限较低，对应\term{内存受限}{memory-bound}区域：计算核心可能等待内存提供数据。当 $I>I_*$ 时，计算吞吐上限较低，对应\term{计算受限}{compute-bound}区域。这里讨论的是 Roofline 模型中的限制关系，实际执行性能可以位于上限之下。
+
+沿斜线区域向右移动，表示每字节数据参与更多运算，带宽所能支撑的 FLOP/s 随之提高；到达屋脊后，继续提高算术强度也不会抬高计算单元本身的吞吐上限。
+
+\Needspace{11\baselineskip}
+\begin{table}[H]
+\centering\small
+\caption{给定 GPU 峰值参数与屋脊点。单位分别为 GFLOP/s、GB/s 和 FLOP/B。}
+\begin{tabularx}{\textwidth}{L{0.10\textwidth} L{0.20\textwidth} Y Y Y}
+\toprule
+GPU & 微架构 & $C_{\mathrm{peak}}$ & $B_{\mathrm{peak}}$ & $I_*$ \\
+\midrule
+K40 & Kepler & 5,040 & 288 & 17.5 \\
+M40 & Maxwell & 6,844 & 288 & 23.8 \\
+P100 & Pascal & 9,340 & 732 & 12.8 \\
+V100 & Volta & 14,028 & 900 & 15.6 \\
+A100 & Ampere & 19,500 & 1,555 & 12.5 \\
+H100 & Hopper & 66,900 & 3,352 & 20.0 \\
+\bottomrule
+\end{tabularx}
+\label{l5:tab:hardware}
+\end{table}
+同一个 $I$ 在不同硬件上，需要与不同的 $I_*$ 比较。峰值参数是给定计算条件下的性能上限，不能直接用作任意 kernel 的预期实测速率。
+
+以 H100 的示例参数为例，采用近似值计算，有
+\[
+I_*\approx\frac{67\ \mathrm{TFLOP/s}}{3.35\ \mathrm{TB/s}}
+\approx20\ \mathrm{FLOP/B}.
+\]
+基本矩阵乘法的请求级估计仅约 $0.25$ FLOP/B，在不计缓存复用的带宽模型中远低于这个屋脊点。
+
+\subsection{向量加法与矩阵乘法的对照}
+
+\subsubsection{向量加法：每个输出都要读二写一}
+\par\noindent\begin{minipage}{\linewidth}
+设向量长度为 $n$，每个元素为 4 B 的单精度浮点数，计算为
+
+\begin{lstlisting}[numbers=none]
+z[i] = x[i] + y[i];
+\end{lstlisting}
+\end{minipage}\par
+每个输出需要读取两个输入元素、写入一个输出元素，共 $4+4+4=12$ B，只进行一次浮点加法。因而
+\begin{equation}
+F=n,\qquad Q=12n,\qquad
+I_{\mathrm{vec}}=\frac{1}{12}
+\approx0.083\ \mathrm{FLOP/B}.
+\label{l5:eq:vector-ai}
+\end{equation}
+这里输出写入占每个元素数据流量的三分之一，必须计入。矩阵乘法每个线程做 $W$ 次乘加而只写一次输出，向量加法则每做一次加法就写一次输出，两者写回成本在总流量中的比重不同。
+
+对 $n=10^9$，运算量为 1 GFLOP，数据量为 12 GB。使用 H100 示例中的 $3.35$ TB/s 带宽，以及舍入后的 $I=0.083$ FLOP/B，可得理论极限时间
+\begin{equation}
+ t_{\min}\approx
+ \frac{1\times10^9\ \mathrm{FLOP}}
+ {(0.083\ \mathrm{FLOP/B})(3.35\times10^{12}\ \mathrm{B/s})}
+ \approx3.60\ \mathrm{ms}.
+\label{l5:eq:vec-time}
+\end{equation}
+直接用未舍入的数据量计算 $12\times10^9/(3.35\times10^{12})$，得到约 $3.58$ ms；差别来自将 $1/12$ 提前舍入为 $0.083$。
+
+\term{理论极限性能}{speed of light}提供比较实测结果的参照。若测得 kernel 时间 $t$，则该模型下的平均有效带宽为 $Q/t$，与带宽上限的比值为
+\[
+\eta_B=\frac{Q/t}{B_{\mathrm{peak}}}
+      =\frac{Q/B_{\mathrm{peak}}}{t}.
+\]
+对这一内存受限例子，它等于带宽时间下限与实测时间之比。比较时应沿用相同的数据量、存储层和计时范围。
+
+\subsubsection{矩阵乘法：理想复用下的算术强度}
+矩阵乘法包含 $W^2$ 个点积，每个点积执行 $W$ 次乘法与 $W$ 次加法，因此
+\[
+F=2W^3.
+\]
+在\textbf{理想复用}假设下，两个输入矩阵在所考察存储层各读入一次，输出矩阵写回一次。每个矩阵有 $W^2$ 个 4 B 元素，于是
+\[
+Q_{\mathrm{ideal}}
+=3\times W^2\times4
+=12W^2\ \mathrm{B},
+\]
+\begin{equation}
+I_{\mathrm{ideal}}
+=\frac{2W^3}{12W^2}
+=\frac W6
+\approx0.167W\ \mathrm{FLOP/B}.
+\label{l5:eq:ideal-ai}
+\end{equation}
+计算量按 $W^3$ 增长，而理想数据量按 $W^2$ 增长，因此算法具有随规模增大的复用潜力。以 $I_*\approx20$ FLOP/B 为例，理想强度与屋脊相交的条件为 $W/6\approx20$，即 $W\approx120$。这个交点属于理想复用模型，实际 kernel 的算术强度仍由实现形成的数据流量决定。
+
+\subsubsection{相同算法为何得到不同的强度}
+\begin{table}[H]
+\centering\small
+\caption{矩阵乘法的算法级复用潜力与基本实现的请求级计数。}
+\begin{tabularx}{\textwidth}{L{0.22\textwidth} Y Y}
+\toprule
+分析口径 & 计数的访存行为 & 算术强度 \\
+\midrule
+理想复用 & 两个输入各读一次，输出写一次 & $W/6$ FLOP/B \\
+基本 kernel & 每次乘加重新请求两个输入元素 & 约 $0.25$ FLOP/B \\
+计入缓存复用 & 按实际到达所建模层的字节量计数 & $F/Q$，取决于复用 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+固定 $M_{ik}$，它会参与同一输出行的所有 $P_{ij}$，即被不同的 $j$ 使用；固定 $N_{kj}$，它会参与同一输出列的所有 $P_{ij}$，即被不同的 $i$ 使用。因此，一个输入元素在数学上可以服务多个输出点积。
+
+基本 kernel 将这些点积分给不同线程，但仍在每个线程内部独立请求操作数。缓存可以自然保留部分数据，显式组织复用则进一步利用上述行列关系。共享内存分块的方向是把一组输入先搬入块内可共享的存储，再让多个线程使用这组数据完成各自的计算。
+
+\begin{keybox}[title={两类例子指向的性能结论}]
+向量加法的强度约为 $0.083$ FLOP/B，基本矩阵乘法的请求级估计约为 $0.25$ FLOP/B，都远低于 H100 示例的约 $20$ FLOP/B 屋脊点。矩阵乘法额外具有显著的输入复用潜力；实现这种复用，可以减小所建模内存层的数据流量，使算术强度向屋脊点移动。
+\end{keybox}

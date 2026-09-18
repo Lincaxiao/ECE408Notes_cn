@@ -1,0 +1,173 @@
+\Needspace{8\baselineskip}
+\section{分块核函数与索引推导}
+\label{l8:sec:implementation}
+\subsection{策略 1：完整输入块与三段载入}
+策略 1 为一个输出块配置 $B$ 个线程。局部线程号记为 $t$，块起点为 $s=bB$，线程的输出下标为 $i=s+t$。共享数组 \mbox{\code{N_ds}} 需要容纳 $B+2r$ 个元素。在这个共享数组中，最左位置从整个输入窗口的左端开始，因而有统一映射
+\begin{equation}
+ \boxed{\quad N_{\mathrm{ds}}[q]=\widetilde N[s-r+q],\qquad 0\le q<B+2r.\quad}
+\label{l8:eq:sharedmapping}
+\end{equation}
+右侧的 $\widetilde N$ 已包含零填充约定。这个关系同时描述了左 halo、核心区与右 halo，是核对所有搬运代码的共同依据。
+
+线程 $t$ 计算的输出为 $P[s+t]$，其第 $j$ 项需要 $\widetilde N[s+t-r+j]$。代入式\eqref{l8:eq:sharedmapping}可知，该项的共享内存下标恰好是 $q=t+j$。因此乘加使用 \code{N_ds[threadIdx.x + j]}，不再额外减去半径：半径偏移已经包含在共享数组起点的选择中。
+
+\textbf{三段载入的分工。}左 halo 由局部编号最大的 $r$ 个线程搬运，即 $t\ge B-r$ 的线程。其全局下标为 $(b-1)B+t=s-B+t$，共享下标为 $t-(B-r)$。当 $t=B-r$ 时，这两个下标分别为 $s-r$ 与 $0$；当 $t=B-1$ 时，分别为 $s-1$ 与 $r-1$，正好覆盖左 halo。
+
+所有线程将核心值 $N[s+t]$ 放入共享位置 $r+t$。右 halo 则由局部编号最小的 $r$ 个线程搬运：全局下标为 $(b+1)B+t=s+B+t$，共享下标为 $r+B+t$。三个目标区间 $[0,r-1]$、$[r,r+B-1]$、$[r+B,r+B+ r-1]$ 连续且不重叠，共同填满 $B+2r$ 个位置。
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}p{.18\textwidth}p{.23\textwidth}Y Y@{}}
+\toprule
+载入区域 & 负责的局部线程 $t$ & 全局输入下标 & 共享数组下标 \\
+\midrule
+左 halo & $B-r,\ldots,B-1$ & $s-B+t$ & $t-(B-r)$ \\
+核心区 & $0,\ldots,B-1$ & $s+t$ & $r+t$ \\
+右 halo & $0,\ldots,r-1$ & $s+B+t$ & $r+B+t$ \\
+\bottomrule
+\end{tabularx}
+\caption{策略 1 的三段搬运映射；要求 $r\le B$，并对无效全局下标填零。}
+\end{table}
+
+在 $b=1,B=4,r=2$ 的例子中，线程 $2,3$ 把 $N[2],N[3]$ 放入共享位置 $0,1$；所有线程把 $N[4],\ldots,N[7]$ 放入位置 $2,\ldots,5$；线程 $0,1$ 把 $N[8],N[9]$ 放入位置 $6,7$。相同线程可以同时承担核心区和 halo 的载入，且这些工作写入不同的共享地址。
+
+完整的三段载入核函数如下。滤波器存放在常量数组 \mbox{\code{Mc}} 中，宽度固定为 $K=5$，由 \mbox{\code{MASK_WIDTH}} 指定。块宽 $B$ 为模板参数，启动时每块必须恰好配置 $B$ 个线程。共享数组在核函数内声明；有符号索引与双侧范围检查保证左右边界按零填充处理。
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={策略 1：核心区与两侧 halo 分段载入。},label={l8:lst:three}]
+template<int B>
+__global__ void convolution_1D_tiled_three_loads(
+    const float* N, float* P, int Width)
+{
+    constexpr int radius = MASK_WIDTH / 2;
+    static_assert(MASK_WIDTH % 2 == 1, "Odd mask required");
+    static_assert(B >= radius, "B must cover each halo");
+    __shared__ float N_ds[B + MASK_WIDTH - 1];
+    int t = int(threadIdx.x);
+    int s = int(blockIdx.x) * B;
+    int i = s + t;
+    if (t >= B - radius) {
+        int q = s - B + t;
+        N_ds[t - (B - radius)] =
+            (0 <= q && q < Width) ? N[q] : 0.0f;
+    }
+    N_ds[radius + t] = (i < Width) ? N[i] : 0.0f;
+    if (t < radius) {
+        int q = s + B + t;
+        N_ds[radius + B + t] =
+            (0 <= q && q < Width) ? N[q] : 0.0f;
+    }
+    __syncthreads();
+    float Pvalue = 0.0f;
+    for (int j = 0; j < MASK_WIDTH; ++j) {
+        Pvalue += N_ds[t + j] * Mc[j];
+    }
+    if (i < Width) P[i] = Pvalue;
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\Needspace{5\baselineskip}
+\textbf{为何载入后需要同步。}一个线程计算时会读取其他线程写入的共享位置。屏障 \mbox{\code{__syncthreads()}} 将共同载入与后续读取分开，使参与线程在开始乘加前可见已完成的共享内存写入。三段载入本身写入互不重叠的位置，中间不需要互相消费刚写出的数据，因此一次位于载入之后的屏障即可。
+
+\textbf{输出越界不等于搬运任务消失。}最后一个块中，某个线程的 $i$ 即使超过 $W-1$，它负责的共享位置仍可能被其他有效输出使用，包括对幽灵位置写零。因此完整代码先让所有线程完成分工、经过屏障，再用 $i<W$ 保护写出。直接版入口处的提前返回不能原样搬到这段代码的载入前；具体缺失哪些位置，可在第\ref{l8:sec:examples}节的末尾块例子中核对。
+
+代码采用“全部线程计算、只保护输出写入”的结构，所以末尾无有效输出的线程也会执行乘加。若将计算限制为有效输出线程，需要把这一限制放在共同载入与屏障之后，且不得跳过仍被其他线程需要的搬运任务。
+
+\subsection{策略 1 的连续载入写法}
+三段写法按“左、核心、右”分配输入。另一种写法直接把完整共享数组看成一段连续的长度 $B+2r$ 的区间：第一轮由所有线程填入前 $B$ 个位置，第二轮由部分线程填入剩余 $2r=K-1$ 个位置。两种写法最终都满足式\eqref{l8:eq:sharedmapping}，所以计算循环完全相同。
+
+第一轮让线程 $t$ 读取 \code{start = i - radius}，写入 \code{N_ds[t]}。第二轮令 \code{start += B}，由 $t<2r$ 的线程读取该地址，写入 \code{N_ds[B+t]}。这里第二轮补齐的是“完整输入块的末尾”，其中可能同时包含核心区的一部分和右 halo。
+
+例如 $B=4,r=2,s=4$ 时，第一轮载入 $N[2:5]$，即左 halo 加核心区的前半部分；第二轮载入 $N[6:9]$，即核心区后半部分加右 halo。与三段写法相比，区别在于每个线程负责哪些搬运，而非最终共享数组的内容。
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={策略 1：两轮连续载入；需要 $K-1\le B$。},label={l8:lst:two}]
+template<int B>
+__global__ void convolution_1D_tiled_two_loads(
+    const float* N, float* P, int Width)
+{
+    constexpr int radius = MASK_WIDTH / 2;
+    static_assert(MASK_WIDTH % 2 == 1, "Odd mask required");
+    static_assert(B >= MASK_WIDTH - 1, "Two loads need B >= K-1");
+    __shared__ float N_ds[B + MASK_WIDTH - 1];
+    int t = int(threadIdx.x);
+    int i = int(blockIdx.x) * B + t;
+    int start = i - radius;
+    N_ds[t] = (0 <= start && start < Width)
+            ? N[start] : 0.0f;
+    if (t < MASK_WIDTH - 1) {
+        start += B;
+        N_ds[t + B] = (0 <= start && start < Width)
+                    ? N[start] : 0.0f;
+    }
+    __syncthreads();
+    float Pvalue = 0.0f;
+    for (int j = 0; j < MASK_WIDTH; ++j) {
+        Pvalue += N_ds[t + j] * Mc[j];
+    }
+    if (i < Width) P[i] = Pvalue;
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\textbf{两轮载入的覆盖条件。}第二轮最多有 $B$ 个线程各填一个位置，而剩余位置数为 $2r$，因此要求 $2r\le B$。条件 \code{MASK_WIDTH - 1 > threadIdx.x} 在这个条件下可以覆盖所有剩余位置；当 $K-1>B$ 时，仅有两轮就无法填满共享数组。这个限制由载入分工推得，不影响卷积计算公式本身。
+
+\textbf{由同一映射导出的循环形式。}需要支持更多载入轮次时，让线程 $t$ 依次负责 $q=t,t+B,t+2B,\ldots$，直到 $q\ge B+K-1$。每个合法共享下标都有唯一的模 $B$ 余数，因此恰好由一个线程负责：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={连续载入的索引推广；替换载入阶段，之后仍需相同屏障与计算循环。}]
+int s = int(blockIdx.x) * B;
+for (int q = t; q < B + MASK_WIDTH - 1; q += B) {
+    int g = s - radius + q;
+    N_ds[q] = (0 <= g && g < Width) ? N[g] : 0.0f;
+}
+__syncthreads();
+\end{lstlisting}
+\end{minipage}\par
+该循环将两轮载入推广到任意所需轮数。当输入块比线程块更宽时，各线程以步长 $B$ 分摊载入任务，仍保持共享位置恰好初始化一次。
+
+\subsection{策略 3：核心区缓存与按需 halo 读取}
+策略 3 的共享数组只容纳 $B$ 个核心输入。线程 $t$ 将 $N[s+t]$ 放入 \code{N_ds[t]}，所以共享映射变为 $N_{\mathrm{ds}}[q]=\widetilde N[s+q]$，$0\le q<B$。载入完成后经过屏障，再进入卷积循环。
+
+对输出 $i=s+t$ 的第 $j$ 项，输入全局下标为 $g=i-r+j$。先判断它是否属于全局有效区间 $[0,W)$；有效时再判断是否属于本块核心区 $[s,s+B)$。位于核心区的输入，其共享下标为 $g-s=t-r+j$；位于 halo 的输入直接使用全局下标 $g$ 读取。
+
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={策略 3：缓存核心区，并检查全局输入范围。},label={l8:lst:core}]
+template<int B>
+__global__ void convolution_1D_core_shared(
+    const float* N, float* P, int Width)
+{
+    constexpr int radius = MASK_WIDTH / 2;
+    static_assert(MASK_WIDTH % 2 == 1, "Odd mask required");
+    __shared__ float N_ds[B];
+    int t = int(threadIdx.x);
+    int s = int(blockIdx.x) * B;
+    int i = s + t;
+    N_ds[t] = (i < Width) ? N[i] : 0.0f;
+    __syncthreads();
+    float Pvalue = 0.0f;
+    for (int j = 0; j < MASK_WIDTH; ++j) {
+        int N_index = i - radius + j;
+        if (0 <= N_index && N_index < Width) {
+            if (s <= N_index && N_index < s + B) {
+                Pvalue += N_ds[t - radius + j] * Mc[j];
+            } else {
+                Pvalue += N[N_index] * Mc[j];
+            }
+        }
+    }
+    if (i < Width) P[i] = Pvalue;
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\textbf{共享下标安全性。}进入共享读取分支时，已有 $s\le g<s+B$，因此 $0\le g-s<B$，等价于 $0\le t-r+j<B$。尽管表达式中含有减去半径，分支条件保证实际读取时下标合法。外层条件负责全局数组边界，内层条件负责选择数据来源，两者不能相互替代。
+
+以 $s=4,B=4,r=2$ 的线程 $t=0$ 为例，它计算 $P[4]$，依次读取 $N[2]$ 到 $N[6]$。前两项不属于核心区，从全局地址读取；后三项属于核心区，从共享位置 $0,1,2$ 读取。与此同时，计算 $P[6]$ 的线程可能在相同的循环迭代已经使用共享内存，因而同一 warp 内可能出现不同读取分支。
+
+\begin{keybox}[title={两种共享数组起点决定两种计算下标}]
+策略 1 的共享位置 $0$ 对应全局位置 $s-r$，因此读取下标为 $t+j$。策略 3 的共享位置 $0$ 对应全局位置 $s$，因此读取下标为 $t-r+j$，且仅在输入属于核心区时使用。这一差异完全来自共享数组表示的输入范围。
+\end{keybox}
+
+核心区载入同样需要检查边界。 \code{(i < Width) ? N[i] : 0.0f} 在第一次全局读取之前处理了末尾块；仅在最后给 \code{P[i]} 加条件，并不能保护此前已经执行的 \code{N[i]} 读取。策略 3 与策略 1 都要完成共同载入和屏障，随后才进入各自的计算路径。
+\FloatBarrier

@@ -1,0 +1,160 @@
+\section{多维启动配置与数据布局}
+
+\subsection{使用 \texttt{dim3} 指定块与网格尺寸}
+
+核函数启动语法中的两个配置参数分别表示网格尺寸和线程块尺寸：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={二维网格的典型启动配置}]
+dim3 numThreadsPerBlock(32, 32);
+
+dim3 numBlocks(
+    (width  + numThreadsPerBlock.x - 1) / numThreadsPerBlock.x,
+    (height + numThreadsPerBlock.y - 1) / numThreadsPerBlock.y);
+
+kernel<<<numBlocks, numThreadsPerBlock>>>(/* kernel arguments */);
+\end{lstlisting}
+\end{minipage}\par
+
+内建类型 \texttt{dim3} 用三个分量保存 $x,y,z$ 方向的尺寸。上例只显式给出两个分量，因此 $z$ 分量取 1。核函数内部读到的 \texttt{blockDim} 等于启动时传入的 \texttt{numThreadsPerBlock}，读到的 \texttt{gridDim} 等于 \texttt{numBlocks}。
+
+二维数据的启动配置遵循以下对应关系：
+\[
+\begin{aligned}
+B_x &= \text{线程块宽度}, & B_y &= \text{线程块高度},\\
+G_x &= \text{水平方向块数}, & G_y &= \text{竖直方向块数}.
+\end{aligned}
+\]
+其中 $B_xB_y$ 是每块线程数，$G_xG_y$ 是网格中的块数。
+
+\subsection{向上取整除法}
+
+若数据宽度为 $W$，每块在 $x$ 方向覆盖 $B_x$ 个元素，则所需块数必须满足
+\[
+G_xB_x\geq W.
+\]
+取满足该条件的最小整数，得到
+\[
+\boxed{G_x=\left\lceil\frac{W}{B_x}\right\rceil},\qquad
+\boxed{G_y=\left\lceil\frac{H}{B_y}\right\rceil}.
+\]
+对正整数，可用整数运算实现为
+\[
+\left\lceil\frac{W}{B_x}\right\rceil
+=\frac{W+B_x-1}{B_x},
+\]
+右侧除法按整数除法截断。
+
+\begin{derivationbox}[title=整数向上取整公式为何成立]
+令 $W=qB_x+r$，其中 $0\leq r<B_x$。
+\begin{itemize}
+  \item 若 $r=0$，则 $(W+B_x-1)/B_x=q+(B_x-1)/B_x$，整数除法结果为 $q$；
+  \item 若 $r>0$，则 $W+B_x-1=(q+1)B_x+(r-1)$，整数除法结果为 $q+1$。
+\end{itemize}
+两种情形分别对应整除与非整除，恰好等于 $\lceil W/B_x\rceil$。
+\end{derivationbox}
+
+\subsection{覆盖矩形与多余线程}
+
+向上取整保证所有有效元素都被覆盖，但通常会启动一部分落在数据范围外的线程。以宽 $W=76$、高 $H=62$ 的图像和 $16\times16$ 线程块为例：
+\[
+G_x=\left\lceil\frac{76}{16}\right\rceil=5,
+\qquad
+G_y=\left\lceil\frac{62}{16}\right\rceil=4.
+\]
+因此启动 $5\times4=20$ 个线程块，共有
+\[
+20\times16\times16=5120
+\]
+个线程，而图像只有
+\[
+76\times62=4712
+\]
+个像素。多出的 $5120-4712=408$ 个线程必须通过边界条件排除。
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.77\textwidth]{boundary_coverage_p20.png}
+  \caption{$76\times62$ 图像由 $16\times16$ 线程块向上取整覆盖。右侧、底部以及右下角区域包含越过图像边界的线程。}
+\end{figure}
+
+对应的二维有效性条件为
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={二维输出坐标的边界保护}]
+if (row < height && col < width) {
+    // All output memory accesses using (row, col) are valid here.
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\begin{warningbox}
+向上取整只保证“线程数量足够”，不保证每个线程都对应有效数据。只要数据尺寸可能不是块尺寸的整数倍，就必须在访问内存前检查每个相关维度。
+\end{warningbox}
+
+\subsection{二维数据的行主序布局}
+
+C 与 C++ 按行主序 (row-major order) 存放普通二维数组：同一行的元素在线性内存中连续，整行存完后才存下一行。设矩阵或图像共有 $H$ 行、$W$ 列，元素的逻辑坐标为 $(r,c)$，其中
+\[
+0\leq r<H,
+\qquad
+0\leq c<W.
+\]
+第 $r$ 行之前共有 $r$ 个完整行，每行含 $W$ 个元素，因此该行起点的线性偏移为 $rW$；再加上行内偏移 $c$，得到
+\[
+\boxed{\operatorname{index}(r,c)=rW+c}.
+\]
+若数组首地址为 $p$、元素类型为 $T$，对应字节地址为
+\[
+\operatorname{addr}(r,c)
+=p+(rW+c)\operatorname{sizeof}(T).
+\]
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.92\textwidth]{row_major_p15.png}
+  \caption{$4\times4$ 矩阵按行主序展开为一维连续序列。同行元素相邻，下一行紧随上一行。}
+\end{figure}
+
+\begin{examplebox}[title=从二维坐标到线性下标]
+对宽度 $W=4$ 的矩阵，元素 $M_{2,1}$ 位于第 2 行、第 1 列，采用从 0 开始的下标。其线性下标为
+\[
+\operatorname{index}(2,1)=2\times4+1=9.
+\]
+这意味着它是从线性下标 0 开始计数的第 10 个元素。
+\end{examplebox}
+
+行主序公式还直接给出两个局部关系：
+\[
+\operatorname{index}(r,c+1)=\operatorname{index}(r,c)+1,
+\]
+说明同一行相邻列在内存中相邻；而
+\[
+\operatorname{index}(r+1,c)=\operatorname{index}(r,c)+W,
+\]
+说明同一列相邻行之间相隔 $W$ 个元素。
+
+\subsection{三维数据的线性化补充}
+
+若三维数据尺寸为深度 $D$、高度 $H$、宽度 $W$，并采用 $x$ 对应列、$y$ 对应行、$z$ 对应深度的约定，则可先将 $(d,r,c)$ 看成第 $d$ 个二维平面中的位置。每个平面含 $HW$ 个元素，因此
+\[
+\boxed{
+\operatorname{index}(d,r,c)=(dH+r)W+c=dHW+rW+c
+}.
+\]
+该式是二维行主序的逐层扩展。核函数仍应先验证
+\[
+0\leq d<D,
+\qquad 0\leq r<H,
+\qquad 0\leq c<W,
+\]
+再使用线性下标访问内存。
+
+\begin{keybox}
+二维核函数的标准地址链条为
+\[
+(\texttt{blockIdx},\texttt{threadIdx})
+\longrightarrow (r,c)
+\longrightarrow rW+c
+\longrightarrow \text{内存访问}.
+\]
+每一步使用不同信息：线程层次给出逻辑坐标，数据布局给出线性偏移，边界条件保证该偏移有效。
+\end{keybox}

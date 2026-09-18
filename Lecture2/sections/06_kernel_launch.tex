@@ -1,0 +1,119 @@
+\Needspace{20\baselineskip}
+\section{核函数实现、启动配置与边界检查}
+
+\subsection{核函数声明与线程工作}
+
+\par\noindent\begin{minipage}{\linewidth}
+核函数使用 \code{\_\_global\_\_} 限定符声明。每个线程执行同一函数体，并根据内置索引计算自己的元素编号：
+
+\begin{lstlisting}[style=cuda]
+__global__ void vecAddKernel(const float* A_d,
+                             const float* B_d,
+                             float* C_d,
+                             int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        C_d[i] = A_d[i] + B_d[i];
+    }
+}
+\end{lstlisting}
+\end{minipage}\par
+
+\code{i} 是\term{自动局部变量}{automatic local variable}。逻辑上，每个线程拥有自己的 \code{i}，一个线程对它的赋值不会改变其他线程的副本。
+
+\subsection{三重尖括号与启动参数}
+
+\par\noindent\begin{minipage}{\linewidth}
+主机通过\term{三重尖括号语法}{triple-chevron syntax}启动核函数：
+\begin{lstlisting}[style=cuda,numbers=none]
+vecAddKernel<<<numBlocks, threadsPerBlock>>>(A_d, B_d, C_d, n);
+\end{lstlisting}
+\end{minipage}\par
+第一个执行配置参数是网格中的线程块数，第二个参数是每个线程块的线程数。二者的位置不能互换。
+
+\subsection{向上取整除法的推导}
+
+设数据元素数为 $n$，每个线程块有 $T$ 个线程。若每个线程只处理一个元素，需要的线程块数量为
+\[
+B=\left\lceil\frac{n}{T}\right\rceil.
+\]
+在整数算术中常写为
+\[
+\boxed{B=\left\lfloor\frac{n+T-1}{T}\right\rfloor},
+\]
+\par\noindent\begin{minipage}{\linewidth}
+对应代码
+\begin{lstlisting}[style=cuda,numbers=none]
+int numBlocks = (n + threadsPerBlock - 1) / threadsPerBlock;
+\end{lstlisting}
+\end{minipage}\par
+
+证明如下。令 $n=qT+r$，其中 $0\le r<T$。
+\begin{itemize}
+  \item 若 $r=0$，则 $n$ 可被 $T$ 整除，公式得到 $B=q$；
+  \item 若 $r>0$，则至少还需要一个线程块，公式得到 $B=q+1$。
+\end{itemize}
+因此该整数表达式与向上取整完全等价。
+
+\slidefig{0.94}{page-25.png}{$n=1000$、线程块大小为 256 时的线程分配}
+
+\subsection{为什么必须做边界检查}
+
+总启动线程数为
+\[
+N_{\mathrm{launch}}=BT.
+\]
+由于 $B$ 经过向上取整，通常有 $N_{\mathrm{launch}}\ge n$。多出的线程数
+\[
+E=BT-n
+\]
+\par\noindent\begin{minipage}{\linewidth}
+满足 $0\le E<T$。这些额外线程没有对应的数据元素，必须在访问数组前检查
+\begin{lstlisting}[style=cuda,numbers=none]
+if (i < n) { /* valid work */ }
+\end{lstlisting}
+\end{minipage}\par
+否则它们可能越界读取或写入设备内存。
+
+\begin{examplebox}[title={例：$n=1000$，$T=256$}]
+\[
+B=\left\lceil\frac{1000}{256}\right\rceil=4,
+\qquad
+N_{\mathrm{launch}}=4\times256=1024.
+\]
+前 1000 个线程处理有效元素，最后 24 个线程满足 $i\ge1000$，被边界条件屏蔽。
+\end{examplebox}
+
+\subsection{向量加法的主机端骨架}
+
+\par\noindent\begin{minipage}{\linewidth}
+把内存管理与核函数启动串联起来，得到如下流程：
+
+\begin{lstlisting}[style=cuda]
+void vecAdd(const float* A_h, const float* B_h,
+            float* C_h, int n) {
+    size_t bytes = static_cast<size_t>(n) * sizeof(float);
+    float *A_d = nullptr, *B_d = nullptr, *C_d = nullptr;
+
+    cudaMalloc(reinterpret_cast<void**>(&A_d), bytes);
+    cudaMalloc(reinterpret_cast<void**>(&B_d), bytes);
+    cudaMalloc(reinterpret_cast<void**>(&C_d), bytes);
+
+    cudaMemcpy(A_d, A_h, bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(B_d, B_h, bytes, cudaMemcpyHostToDevice);
+
+    const int threadsPerBlock = 256;
+    const int numBlocks = (n + threadsPerBlock - 1)
+                        / threadsPerBlock;
+    vecAddKernel<<<numBlocks, threadsPerBlock>>>(A_d, B_d, C_d, n);
+
+    cudaMemcpy(C_h, C_d, bytes, cudaMemcpyDeviceToHost);
+
+    cudaFree(A_d);
+    cudaFree(B_d);
+    cudaFree(C_d);
+}
+\end{lstlisting}
+\end{minipage}\par
+
+这段代码展示了结构，但尚未加入系统化的错误检查。下一轮将补齐可运行版本，并解释异步启动、编译流程与错误传播。
