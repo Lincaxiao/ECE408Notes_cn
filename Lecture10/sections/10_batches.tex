@@ -1,0 +1,92 @@
+\section{训练组织与并行计算}
+\subsection{训练轮次与一次参数更新}
+
+一个训练轮次（epoch）表示遍历整个训练集一次。一次参数更新则表示计算一组梯度后，执行一次 $\Theta\leftarrow\Theta-\epsilon\Delta\Theta$。一个训练轮次中包含多少次更新，取决于每次更新使用多少个样本。
+
+设训练集为 $\mathcal D=\{(x_s,T_s)\}_{s=1}^{D}$。采用梯度求和约定，全数据目标为
+\begin{equation}
+ J_{\mathcal D}(\Theta)=\sum_{s=1}^{D}E_s(\Theta),\qquad
+ \nabla J_{\mathcal D}(\Theta)=\sum_{s=1}^{D}\nabla E_s(\Theta).
+ \label{l10:eq:dataset-loss}
+\end{equation}
+这里 $D$ 是样本数，$N$ 仍表示一个输入的维度。各个样本共享同一组网络参数，但具有各自的输入、标签、前向中间量及参数梯度。
+
+\subsection{全批量与小批量梯度下降}
+
+\subsubsection{全批量：累积整个训练集后更新}
+全批量梯度下降（full-batch gradient descent）先将梯度累加器置零，再依次处理所有带标签样本。对每个样本，读取输入、前向计算输出、根据标签计算损失、反向求参数梯度，并把梯度加入累加器。整个训练集处理完毕后，执行一次参数更新。
+
+整个累加过程中参数保持不变。因此，累加量正好对应式~\eqref{l10:eq:dataset-loss} 在这一组参数处的梯度。一个 epoch 对应一次参数更新。这里的“完整梯度”是给定有限训练集目标的梯度。
+
+\subsubsection{小批量：按样本组交替求梯度和更新}
+小批量随机梯度下降（mini-batch stochastic gradient descent）把数据分成若干批量，每个批量单独清零梯度累加器、完成前向与反向、累加梯度并更新参数。设某批样本索引组成集合 $\mathcal B$，批量大小为 $B$，对应梯度为
+\begin{equation}
+ \Delta\Theta_{\mathcal B}=\sum_{s\in\mathcal B}\nabla E_s(\Theta),
+ \qquad\Theta^+=\Theta-\epsilon\Delta\Theta_{\mathcal B}.
+ \label{l10:eq:batch-update}
+\end{equation}
+下一批样本使用更新后的参数继续计算。与全批量相比，这种方式在完整遍历训练集之前就会多次调整参数。批量大小还影响一次梯度估计利用的信息量，以及可同时处理的样本数量。
+
+\begin{table}[H]
+\centering
+\caption{每次更新涉及的样本范围与更新次数。单样本情形作为小批量公式的 $B=1$ 特例。}
+\label{l10:tab:batch-types}
+\begin{tabularx}{\linewidth}{lYY}
+\toprule
+方式 & 一次更新使用的样本 & 一次完整遍历中的更新次数\\
+\midrule
+全批量 & 全部 $D$ 个 & 1\\
+小批量 & 一组 $B$ 个 & $D/B$，当 $B$ 整除 $D$ 时\\
+单样本 & 1 个 & $D$\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+以 60,000 个样本、$B=100$ 为例，一个 epoch 包含 600 个批量，因此有 600 次参数更新。若不整除且保留最后一个较小批量，更新次数为 $\lceil D/B\rceil$。
+
+\subsubsection{梯度求和与梯度求平均}
+上述更新采用梯度求和。若目标改为批量平均损失 $\overline J_{\mathcal B}=B^{-1}\sum_{s\in\mathcal B}E_s$，则梯度也需要除以 $B$。这是同一批样本目标的尺度变化。
+
+采用相同学习率时，平均梯度产生的参数改变量是求和梯度的 $1/B$。若要求两种写法产生相同的一步更新，应配套调整学习率。反向公式与参数更新之间，只需按所定义的目标处理一次这个归一化因子。
+
+\subsection{把小批量写成矩阵运算}
+按列组织一批样本后，逐样本的前向与反向过程可写成矩阵乘法、逐元素运算和归约。以下采用梯度求和约定。
+\subsubsection{按列组织样本的前向计算}
+把同一批中的 $B$ 个输入作为矩阵 $X\in\mathbb{R}^{N\times B}$ 的各列。对于隐藏维度 $M$、类别数 $C$ 的两层网络，前向可以写成
+\begin{align}
+ F_1&=W_1X+b_1\mathbf{1}_B^{\mathsf T},&Y&=\sigma(F_1),\\
+ F_2&=W_2Y+b_2\mathbf{1}_B^{\mathsf T},&Z&=\sigma(F_2),\\
+ K_{:,s}&=\operatorname{softmax}(Z_{:,s}),&&s=1,\ldots,B.
+ \label{l10:eq:batch-forward}
+\end{align}
+其中 $Y\in\mathbb{R}^{M\times B}$，$Z,K\in\mathbb{R}^{C\times B}$，$\mathbf{1}_B$ 是长度为 $B$ 的全 1 向量。偏置项把同一个偏置向量加到每一列；softmax 对每个样本的类别列分别归一化。
+
+\subsubsection{多样本外积之和变成矩阵乘法}
+令 $G_2\in\mathbb{R}^{C\times B}$ 的第 $s$ 列是样本 $s$ 的 $\delta_2$，$G_1\in\mathbb{R}^{M\times B}$ 的第 $s$ 列是其 $\delta_1$。将单样本外积按样本求和，可得
+\begin{align}
+ \nabla_{W_2}J_{\mathcal B}&=G_2Y^{\mathsf T},&
+ \nabla_{b_2}J_{\mathcal B}&=G_2\mathbf{1}_B,\\
+ \nabla_{W_1}J_{\mathcal B}&=G_1X^{\mathsf T},&
+ \nabla_{b_1}J_{\mathcal B}&=G_1\mathbf{1}_B.
+ \label{l10:eq:batch-gradients}
+\end{align}
+例如，$G_1X^{\mathsf T}$ 的第 $(i,j)$ 个元素是 $\sum_s\delta_{1,s}[i]x_s[j]$，正好是这一权重对批内全部样本的梯度累加量。传向隐藏层的梯度同样可以一次写成 $W_2^{\mathsf T}G_2$，随后与 $Y\odot(\mathbf{1}-Y)$ 逐元素相乘。
+
+\begin{table}[H]
+\centering
+\caption{批量网络中的主要计算形式。由前向与梯度矩阵公式直接归纳。}
+\begin{tabularx}{\linewidth}{lYY}
+\toprule
+计算阶段 & 代表表达式 & 运算结构\\
+\midrule
+全连接前向 & $W_1X$、$W_2Y$ & 矩阵乘法\\
+激活与局部导数 & $\sigma(F_1)$、$Y\odot(\mathbf{1}-Y)$ & 逐元素计算\\
+Softmax 与损失 & 每列指数和、加权代价和 & 按类别归约\\
+跨层反向 & $W_2^{\mathsf T}G_2$ & 矩阵乘法\\
+权重梯度 & $G_2Y^{\mathsf T}$、$G_1X^{\mathsf T}$ & 矩阵乘法\\
+偏置梯度 & $G_\ell\mathbf{1}_B$ & 按样本归约\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+批量把多个向量计算组织到同一个矩阵运算中，从而暴露样本之间的并行性。与此同时，激活值和反向梯度也多出一个大小为 $B$ 的样本维度，需要保存更多中间数据。批量大小因此同时关联梯度估计、并行组织与中间存储；实际吞吐还取决于矩阵尺寸、存储访问与硬件资源。

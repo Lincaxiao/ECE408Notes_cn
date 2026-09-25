@@ -1,0 +1,102 @@
+\Needspace{20\baselineskip}
+\section{带宽、算术强度与计算上限}
+\label{l9:sec:bandwidth}
+
+\subsection{未分块卷积的字节／浮点操作比}
+一次卷积乘加读取一个单精度输入，产生一次乘法与一次加法，按两次浮点操作（floating-point operation，FLOP）计。输入的 4 字节来自全局内存；权重的 4 字节按常量缓存提供。只统计输入的全局读入量时，每次乘加对应
+\begin{equation}
+ b_0=\frac{4\,\mathrm{B}}{2\,\mathrm{FLOP}}
+ =2\,\mathrm{B}/\mathrm{FLOP}.
+ \label{l9:eq:b0}
+\end{equation}
+$b$ 表示字节／浮点操作比，数值越大，每完成一定算术工作所需的全局数据越多。它的倒数称为算术强度（arithmetic intensity），记为 $I=1/b$，单位为 $\mathrm{FLOP}/\mathrm{B}$；未分块的基准值是 $I_0=0.5\,\mathrm{FLOP}/\mathrm{B}$。
+
+对于内部块，若每次输入加载平均支持 $R$ 次使用，算术工作量不变，输入全局读取量降为原来的 $1/R$，所以
+\begin{equation}
+ b_{\mathrm{tiled}}=\frac{b_0}{R}=\frac{2}{R}\,\mathrm{B}/\mathrm{FLOP},
+ \qquad
+ I_{\mathrm{tiled}}=\frac{R}{2}\,\mathrm{FLOP}/\mathrm{B}.
+ \label{l9:eq:arithmetic-intensity}
+\end{equation}
+这些式子连接了几何复用与带宽需求。后续峰值分析沿用这一口径：单精度输入、内部有效输出、权重按常量缓存供给，暂不计输出写回。
+
+\subsection{由内存带宽得到吞吐上限}
+设内存带宽为 $\mathcal B$，单位为字节每秒；计算峰值为 $C_{\mathrm{peak}}$，单位为 FLOP 每秒。若每完成一 FLOP 需要 $b$ 字节输入，则带宽最多支持 $\mathcal B/b$ FLOP/s。结合算术峰值，模型给出的上限为
+\begin{equation}
+ C_{\mathrm{bound}}
+ =\min\!\left(C_{\mathrm{peak}},\frac{\mathcal B}{b}\right)
+ =\min\!\left(C_{\mathrm{peak}},\mathcal B I\right).
+ \label{l9:eq:throughput-bound}
+\end{equation}
+当 $\mathcal B/b<C_{\mathrm{peak}}$ 时，内存供给先达到上限；提高数据复用能增加带宽允许的算术吞吐。要使带宽至少能够供给峰值算术，需要
+\begin{equation}
+ b\le b_{\mathrm{balance}}:=\frac{\mathcal B}{C_{\mathrm{peak}}},
+ \qquad
+ R\ge R_{\min}:=\frac{b_0C_{\mathrm{peak}}}{\mathcal B}.
+ \label{l9:eq:required-reuse}
+\end{equation}
+$R_{\min}$ 是这一输入流量模型中的必要复用门槛。到达门槛后，线程调度、同步、共享内存访问及其他执行开销仍会影响实际吞吐。
+
+以 $C_{\mathrm{peak}}=1000\,\mathrm{GFLOP/s}$、$\mathcal B=150\,\mathrm{GB/s}$ 为例，未分块时带宽上限是 $150/2=75\,\mathrm{GFLOP/s}$，仅为峰值的 $7.5\%$。所需复用为 $1000/75\approx13.3$。这里 GB 与 GFLOP 都采用十进制数量级，因此相除时可以直接约去 $10^9$。
+
+\subsection{不同参数下的复用门槛}
+将下面三组硬件算例参数代入同一公式，可以比较计算能力增长与内存带宽增长之间的差异。峰值相对于带宽越大，每加载一个字节需要承担的算术工作就越多。
+
+\begin{table}[htbp]
+\centering\small
+\caption{只计输入读取时的带宽上限与复用门槛}
+\label{l9:tab:devices}
+\begin{tabularx}{\textwidth}{@{}Yrrrrr@{}}\toprule
+算例 & $C_{\mathrm{peak}}$ & $\mathcal B$ & 未分块上限 & 峰值比例 & $R_{\min}$\\\midrule
+约 2010 年 GPU & 1000 GFLOP/s & 150 GB/s & 75 GFLOP/s & $7.50\%$ & 13.3\\
+2013 年 GRID K520 & 5000 GFLOP/s & 192 GB/s & 96 GFLOP/s & $1.92\%$ & 52.1\\
+H100 PCIe & 51 TFLOP/s & 2 TB/s & 1 TFLOP/s & $1.96\%$ & 51.0\\\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{H100 算例的复用门槛。} 按所列 $51\,\mathrm{TFLOP/s}$、$2\,\mathrm{TB/s}$ 和 $b_0=2\,\mathrm{B}/\mathrm{FLOP}$ 计算，$R_{\min}=2\times51/2=51$；表\ref{l9:tab:devices}列出这一参数组合下的计算结果。
+
+一维 $m=5$ 卷积的内部块复用上限是 5，二维 $m=5$ 的上限是 25。即使不断增大分块，这两种情形也达不到 $51$ 的输入复用门槛。二维 $m=9,T=32$ 时，$R=(32\times9/40)^2=51.84$，在此模型中刚好超过该门槛。是否能用相应线程组织实现这个分块，还取决于资源容量。
+
+\subsection{权重窗口大小与资源平衡}
+由式\eqref{l9:eq:throughput-bound}可得，分块后的模型峰值比例是
+\begin{equation}
+ U(R)=\min\!\left(1,\frac{\mathcal B R}{b_0C_{\mathrm{peak}}}\right).
+ \label{l9:eq:utilization-bound}
+\end{equation}
+把 1000 GFLOP/s、150 GB/s 的组合记为模型 A，把 5000 GFLOP/s、192 GB/s 的组合记为模型 B，则分别有 $U_A=\min(1,0.075R)$ 和 $U_B=\min(1,0.0192R)$。下面固定输出分块大小，改变权重边长。
+
+\begin{table}[htbp]
+\centering\small
+\caption{不同权重窗口对应的近似峰值比例}
+\label{l9:tab:mask-balance}
+\begin{tabular}{@{}llrrr@{}}\toprule
+维度 & 输出分块 & $m$ & 模型 A & 模型 B\\\midrule
+\multirow{4}{*}{一维} & \multirow{4}{*}{$T=1024$} & 5 & $37\%$ & $9.6\%$\\
+ & & 9 & $67\%$ & $17\%$\\
+ & & 15 & $100\%$ & $28\%$\\
+ & & 55 & $100\%$ & $100\%$\\\midrule
+\multirow{4}{*}{二维} & \multirow{4}{*}{$T\times T=32\times32$} & 3 & $60\%$ & $15\%$\\
+ & & 5 & $100\%$ & $37\%$\\
+ & & 7 & $100\%$ & $67\%$\\
+ & & 9 & $100\%$ & 接近 $100\%$\\\bottomrule
+\end{tabular}
+\end{table}
+
+\Needspace{5\baselineskip}
+表中百分比为近似值；按未舍入公式计算，二维 $m=5$ 在模型 B 下为 $37.93\%$，二维 $m=9$ 为 $99.53\%$。这些百分比表示带宽模型允许的峰值比例，不能当作已测得的硬件利用率。
+
+一维的内部块复用趋近 $m$，二维则趋近 $m^2$，因此二维卷积用较小的权重边长就可能接近同一个带宽门槛。同时，扩大权重窗口会增加完成一个输出的算术量；峰值比例上升，本身并没有给出处理同一问题所需时间的缩短幅度。
+
+\subsection{扩展计数：将输出写回计入流量}
+为了说明计数口径对结论的影响，可以在原有模型上增加输出写回。一个完整二维内部块加载 $S^2$ 个输入，写回 $T^2$ 个输出，进行 $2T^2m^2$ 次浮点操作。因此，只增加输出写回、不改变权重缓存假设时，得到
+\begin{equation}
+ b_{\mathrm{read+write}}
+ =\frac{4S^2+4T^2}{2T^2m^2}
+ =\frac{2}{R}+\frac{2}{m^2}\quad\mathrm{B}/\mathrm{FLOP}.
+ \label{l9:eq:include-output}
+\end{equation}
+输入复用可以降低第一项，输出写回项则仍然存在。例如 $T=16,m=5$ 时 $R=16$，只计输入得到 $b=0.125\,\mathrm{B}/\mathrm{FLOP}$；加上输出后是 $0.125+0.08=0.205\,\mathrm{B}/\mathrm{FLOP}$。对应的未分块读写口径为 $2+2/m^2$。
+
+因此，使用字节数比较实现、或将理论模型与测量结果对照时，应让输入、权重、输出及边界的统计口径保持一致。几何复用分析提供其中最直接的一部分：一次输入加载究竟支持了多少次邻域使用。
+\FloatBarrier

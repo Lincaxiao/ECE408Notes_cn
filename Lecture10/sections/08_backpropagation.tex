@@ -1,0 +1,76 @@
+\subsection{全连接层的三个梯度}
+
+\subsubsection{每个权重如何影响损失}
+设一层输入 $x\in\mathbb{R}^N$，加权和 $\mathrm{fc}=Wx+b\in\mathbb{R}^M$，并且已经从后续计算得到
+$\delta[i]=\partial E/\partial\mathrm{fc}[i]$。$\delta$ 与该层输出加权和具有相同形状。由式~\eqref{l10:eq:fc-component}，权重 $W[i,j]$ 对相应输出的局部导数是 $x[j]$，所以
+\begin{equation}
+ \frac{\partial E}{\partial W[i,j]}
+ =\frac{\partial E}{\partial\mathrm{fc}[i]}
+   \frac{\partial\mathrm{fc}[i]}{\partial W[i,j]}
+ =\delta[i]x[j].
+ \label{l10:eq:fc-weight-element}
+\end{equation}
+因此，一个权重的梯度需要两项信息：该权重连接的输入值，以及与输出单元对应的反向梯度。这正是前向信息与反向信息在参数计算中的交汇点。
+
+偏置梯度与输入梯度同样由加权和的局部导数得到。
+偏置 $b[i]$ 对 $\mathrm{fc}[i]$ 的导数为 1，因此 $\partial E/\partial b[i]=\delta[i]$。一个输入 $x[j]$ 会影响全部输出，所以它的梯度需要汇总所有输出路径：
+\begin{equation}
+ \frac{\partial E}{\partial x[j]}=\sum_{i=0}^{M-1}\delta[i]W[i,j].
+\end{equation}
+三类梯度的矩阵形式为
+\begin{equation}
+ \boxed{\nabla_WE=\delta x^{\mathsf T},\qquad
+ \nabla_bE=\delta,\qquad
+ \nabla_xE=W^{\mathsf T}\delta.}
+ \label{l10:eq:fc-gradients}
+\end{equation}
+
+\subsubsection{外积与维度核验}
+$\delta$ 的形状为 $M\times1$，$x^{\mathsf T}$ 的形状为 $1\times N$，因此外积 $\delta x^{\mathsf T}$ 的形状为 $M\times N$，正好与 $W$ 一致。$W^{\mathsf T}\delta$ 的形状为 $N\times1$，正好与输入一致。这种检查能够直接发现漏写转置或把两个不同梯度混淆的问题。
+
+对于多个输入分量、多个输出分量，式~\eqref{l10:eq:fc-weight-element} 没有把全部权重的导数压缩成一个标量。“输出梯度乘输入”在逐分量层面得到一个数，在整层层面则是产生完整权重梯度矩阵的外积。
+
+\subsection{两层数字识别网络的完整反向链}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\linewidth]{forward_backward.png}
+\caption{前向从输入逐层计算至概率输出，反向从损失对概率的导数逐层向前传播。图中的第二层也包含 sigmoid。}
+\label{l10:fig:forward-backward}
+\end{figure}
+
+全部向量均为列向量，$\delta_\ell$ 表示损失对第 $\ell$ 层加权和的梯度。
+先在输出端计算 $q[i]=(i-T)^2$、$E=k^{\mathsf T}q$。概率层和第二次 sigmoid 的导数依次给出
+\begin{align}
+ g_z&=k\mathbin{\odot}(q-E\mathbf{1}),\\
+ \delta_2&=g_z\mathbin{\odot} z\mathbin{\odot}(\mathbf{1}-z).
+ \label{l10:eq:delta2}
+\end{align}
+$\delta_2$ 已经是对第二层加权和 $\mathrm{fc}_2$ 的梯度，因此可以计算该层参数梯度：
+\begin{equation}
+ \nabla_{W_2}E=\delta_2y^{\mathsf T},\qquad
+ \nabla_{b_2}E=\delta_2.
+ \label{l10:eq:second-gradients}
+\end{equation}
+同时，将梯度通过第二层传回隐藏输出，再通过隐藏层 sigmoid，得到
+\begin{align}
+ g_y&=W_2^{\mathsf T}\delta_2,\\
+ \delta_1&=g_y\mathbin{\odot} y\mathbin{\odot}(\mathbf{1}-y),
+ \label{l10:eq:delta1}\\
+ \nabla_{W_1}E&=\delta_1x^{\mathsf T},\qquad
+ \nabla_{b_1}E=\delta_1.
+ \label{l10:eq:first-gradients}
+\end{align}
+在 $784\to10\to10$ 网络中，$\nabla_{W_2}E$ 为 $10\times10$，$\nabla_{W_1}E$ 为 $10\times784$，两个偏置梯度都为 $10\times1$。所有梯度都与对应参数同形。
+
+式~\eqref{l10:eq:delta2} 中的 $z\odot(\mathbf{1}-z)$ 来自第二次 sigmoid。只要采用式~\eqref{l10:eq:forward-network} 所定义的网络结构，这个因子就属于完整的链式法则。损失直接作用于连续概率 $k$，反向链不经过输出离散类别编号的 $\operatorname*{arg\,max}$。
+
+\subsection{前向缓存、梯度传递与参数更新的时序}
+
+计算 $\nabla_{W_1}E$ 需要第一层输入 $x$，计算 $\nabla_{W_2}E$ 需要前向得到的隐藏输出 $y$。对于 sigmoid，局部导数也可以直接由 $y$ 和 $z$ 得到；输出概率 $k$ 则用于损失及其初始梯度。反向传播因此依赖前向过程中生成的信息。
+
+同一次更新的梯度应当对应同一组参数。先用当前参数完成前向，再由这些中间结果完成反向，得到各层的参数梯度，最后统一进行 $W_\ell\leftarrow W_\ell-\epsilon\nabla_{W_\ell}E$ 与 $b_\ell\leftarrow b_\ell-\epsilon\nabla_{b_\ell}E$。传播到前一层时使用的 $W_2^{\mathsf T}$，仍是本次前向求值时的权重。
+
+\begin{keybox}[title={全连接层反向计算的分工}]
+$\delta x^{\mathsf T}$ 计算当前层的权重梯度，$\delta$ 给出偏置梯度，$W^{\mathsf T}\delta$ 则把梯度传给前一层。激活函数的导数在相应的激活节点处逐元素相乘。参数更新需要前向输入，跨层传递还需要当前层权重。
+\end{keybox}

@@ -1,0 +1,57 @@
+\subsection{两层网络的数值核算}
+采用 $2\to2\to3$ 的小网络，保留“全连接、sigmoid、全连接、sigmoid、softmax”的结构，以及式~\eqref{l10:eq:lecture-loss} 的损失。以下数值用于逐项检验计算公式。
+取输入、真实类别与初始参数为
+\begin{align}
+ x&=\begin{bmatrix}1\\2\end{bmatrix},\quad T=1,\quad
+ W_1=\begin{bmatrix}0.1&-0.2\\0.3&0.25\end{bmatrix},\quad
+ b_1=\begin{bmatrix}0.05\\-0.1\end{bmatrix},\\
+ W_2&=\begin{bmatrix}0.4&-0.3\\0.1&0.2\\-0.2&0.5\end{bmatrix},\qquad
+ b_2=\begin{bmatrix}0\\0.1\\-0.05\end{bmatrix}.
+\end{align}
+网络共有 $2\times2+2+3\times2+3=15$ 个参数。第一层加权和为 $\mathrm{fc}_1=(-0.25,0.7)^{\mathsf T}$，继续逐层代入得到表~\ref{l10:tab:numeric-forward}。表中向量横向列出，均按列向量参与实际计算。
+
+\begin{table}[H]
+\centering
+\caption{小网络一次前向计算的结果，保留六位小数。}
+\label{l10:tab:numeric-forward}
+\begin{tabularx}{\linewidth}{lY}
+\toprule
+中间量 & 分量\\
+\midrule
+$y=\sigma(\mathrm{fc}_1)$ & $(0.437823,\ 0.668188)$\\
+$\mathrm{fc}_2=W_2y+b_2$ & $(-0.025327,\ 0.277420,\ 0.196529)$\\
+$z=\sigma(\mathrm{fc}_2)$ & $(0.493669,\ 0.568914,\ 0.548975)$\\
+$k=\operatorname{softmax}(z)$ & $(0.318978,\ 0.343906,\ 0.337116)$\\
+$q$ 与 $E$ & $q=(1,0,1)$，$E=0.656094$\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+最大概率的类别已经是 1，但其他类别仍获得较多概率质量，因此损失仍明显大于 0。反向计算得到
+\begin{align}
+ g_z&\approx(0.109698,-0.225635,0.115936)^{\mathsf T},\\
+ \delta_2&\approx(0.027420,-0.055337,0.028706)^{\mathsf T},\\
+ \delta_1&\approx(-0.00007552,-0.00109537)^{\mathsf T}.
+\end{align}
+相应的两个权重梯度是
+\begin{equation}
+ \nabla_{W_2}E\approx
+ \begin{bmatrix}
+ 0.012005&0.018322\\
+ -0.024228&-0.036976\\
+ 0.012568&0.019181
+ \end{bmatrix},\qquad
+ \nabla_{W_1}E\approx
+ \begin{bmatrix}
+ -0.00007552&-0.00015104\\
+ -0.00109537&-0.00219074
+ \end{bmatrix}.
+\end{equation}
+偏置梯度分别等于 $\delta_2$ 和 $\delta_1$。以 $\epsilon=0.1$ 同时更新全部权重与偏置后，重新前向计算得到 $E^+\approx0.655334$。这个下降量来自全部 15 个参数的共同调整。
+
+还可以对任意参数 $\theta_a$ 使用中心差分
+\begin{equation}
+ \frac{\partial E}{\partial\theta_a}\approx
+ \frac{E(\Theta+h e_a)-E(\Theta-h e_a)}{2h},
+\end{equation}
+其中 $e_a$ 只在待检验参数位置为 1。用双精度、$h=10^{-6}$ 检查全部 15 个参数，解析梯度与中心差分的最大绝对差约为 $8.3\times10^{-11}$。该数值核验同时检查了两个 sigmoid 因子、softmax 的交叉项、权重外积与偏置梯度。

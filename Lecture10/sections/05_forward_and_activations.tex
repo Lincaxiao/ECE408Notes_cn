@@ -1,0 +1,80 @@
+\section{前向计算与分类输出}
+\subsection{输入、分数、概率与类别的区别}
+
+前向传播（forward propagation）按照网络的连接方向依次求值。给定输入 $x$ 和参数 $\Theta$，先计算各层加权和与激活值，再获得输出分量。分类任务还需要根据这些输出选择一个类别。
+
+反向传播（backpropagation）则需要真实标签，用损失函数衡量输出与目标的差异，并计算损失对参数的导数。训练包含前向求值、损失计算、反向求导和参数更新；前向求值也是训练的一部分。推断时使用已经确定的参数产生输出。
+
+\begin{table}[H]
+\centering
+\caption{两层数字识别网络的主要符号及其含义。}
+\label{l10:tab:notation}
+\begin{tabularx}{\linewidth}{lYl}
+\toprule
+符号 & 含义 & 数字识别例子的形状\\
+\midrule
+$x$ & 一张图像展开后的输入向量 & $784\times1$\\
+$\mathrm{fc}_1,\ y$ & 第一层加权和与激活输出 & $10\times1$\\
+$\mathrm{fc}_2,\ z$ & 第二层加权和与激活输出 & $10\times1$\\
+$k$ & 归一化后的类别概率向量 & $10\times1$\\
+$T,\ \widehat T$ & 真实数字标签与最终预测标签 & 标量类别编号\\
+$\Theta$ & 两层的权重与偏置集合 & 共 7,960 个参数\\
+$E$ & 一个带标签输入对应的损失 & 标量\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+两层数字识别网络在每层加权和之后均使用 sigmoid，再由 softmax 将第二层激活值转换为类别概率：
+\begin{align}
+ \mathrm{fc}_1&=W_1x+b_1,& y&=\sigma(\mathrm{fc}_1),\\
+ \mathrm{fc}_2&=W_2y+b_2,& z&=\sigma(\mathrm{fc}_2),\\
+ k&=\operatorname{softmax}(z),&\widehat T&=\operatorname*{arg\,max}_{0\le i<C}k[i].
+ \label{l10:eq:forward-network}
+\end{align}
+这里的 $y$ 是隐藏层向量，$z$ 是传入 softmax 的分数向量，$k$ 才是满足归一化要求的类别概率；$\widehat T$ 是离散类别编号。$\operatorname*{arg\,max}$ 的作用是选出最大分量的索引，损失及其导数将在连续输出 $k$ 上定义。
+
+\subsection{激活函数的形状与可求导性}
+
+\subsubsection{符号函数与梯度传播}
+符号函数可以表达 XOR 构造中的硬阈值，但其输出在阈值两侧分别为常数。因此，在非零输入处导数为 0，在零点发生跳变。若直接使用普通链式法则传播梯度，大部分位置都会遇到这个零导数，难以提供连续调整权重所需的信号。
+
+训练中的激活函数既决定前向变换，也决定反向传播时乘上的局部导数。激活值能否随输入的微小变化而改变，是理解这种梯度信号的重要出发点。
+
+\subsubsection{Sigmoid：输出值可以直接用于求导}
+Sigmoid，也称逻辑函数（logistic function），定义为
+\begin{equation}
+ \sigma(u)=\frac{1}{1+e^{-u}},\qquad\sigma:\mathbb{R}\to(0,1).
+ \label{l10:eq:sigmoid}
+\end{equation}
+当 $u$ 增大时，输出从接近 0 平滑增加到接近 1，并在 $u=0$ 时取 $1/2$。其导数可以写成已计算输出的简单函数：
+\begin{align}
+ \sigma'(u)
+ &=\frac{e^{-u}}{(1+e^{-u})^2}\\
+ &=\frac{1}{1+e^{-u}}\left(1-\frac{1}{1+e^{-u}}\right)
+ =\sigma(u)\bigl(1-\sigma(u)\bigr).
+ \label{l10:eq:sigmoid-prime}
+\end{align}
+因此，前向已经算得 $s=\sigma(u)$ 时，反向计算只需要 $s(1-s)$，无需重新求一次指数函数。这也说明为什么保存前向激活值对训练有用。
+
+由 $s\in(0,1)$ 可直接得到 $0<\sigma'(u)\le1/4$；在 $s$ 接近 0 或 1 时导数接近 0。当激活值接近区间两端时，这一局部因子会减小传回的梯度。
+
+\subsubsection{ReLU 与 softplus}
+整流线性单元（rectified linear unit，ReLU）定义为
+\begin{equation}
+ \operatorname{ReLU}(u)=\max(0,u).
+ \label{l10:eq:relu}
+\end{equation}
+负输入被映射为 0，正输入保持不变。它的前向计算不需要指数函数，因此具有较简单的计算形式。由分段定义可得，在 $u<0$ 时导数为 0，在 $u>0$ 时导数为 1；零点没有普通导数。实现反向传播时，需要单独约定零点处采用的梯度值。
+
+Softplus 是 ReLU 的一种平滑近似：
+\begin{equation}
+ \operatorname{softplus}(u)=\ln(1+e^u),\qquad
+ \frac{d\operatorname{softplus}(u)}{du}
+ =\frac{e^u}{1+e^u}=\sigma(u).
+ \label{l10:eq:softplus}
+\end{equation}
+这也解释了“softplus 是逻辑函数的一个原函数”的说法。Sigmoid、ReLU 与 softplus 的形状和计算代价不同；具体网络需要选择与其任务和训练方式相适应的函数。
+
+\begin{keybox}[title={一层中的两类计算}]
+$Wx+b$ 通过矩阵运算组合输入，逐元素激活 $\phi(\cdot)$ 再改变每个输出分量。反向传播时，矩阵部分与激活部分分别贡献自己的导数，并按照链式法则相乘。激活函数的前向值与局部导数因此需要配套考虑。
+\end{keybox}

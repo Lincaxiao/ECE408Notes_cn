@@ -1,0 +1,84 @@
+\section{损失函数、反向传播与参数更新}
+\subsection{数字识别例子中的损失函数}
+
+损失函数（loss function）把模型输出与目标之间的差异转化为一个标量，使训练能够比较不同参数所产生的结果。对于真实数字标签 $T$ 和输出概率 $k$，一个候选损失是
+\begin{equation}
+ E_1=1-k[T].
+\end{equation}
+因为全部类别概率之和为 1，$E_1$ 正好等于分配给所有错误类别的概率质量。它把全部错误类别同等对待，只关心正确类别分量的大小。
+
+数字识别例子实际选用的另一种损失利用类别编号的数值差异：
+\begin{equation}
+ \boxed{E=\sum_{j=0}^{C-1}k[j](j-T)^2.}
+ \label{l10:eq:lecture-loss}
+\end{equation}
+定义 $q[j]=(j-T)^2$，可将其简写为 $E=k^{\mathsf T}q$。正确类别的代价 $q[T]=0$；距离目标数字更远的类别受到更大的惩罚。例如目标为 3 时，类别 2 的代价为 1，而类别 9 的代价为 36。这个数值距离是该例明确采用的损失设计。
+
+式~\eqref{l10:eq:lecture-loss} 可以解释为按 $k$ 加权的数字平方距离。若随机变量 $J$ 以概率 $k[j]$ 取值 $j$，则 $E=\mathbb{E}[(J-T)^2]$。
+因此，先求平方距离再求加权和，与先求预测数字的均值再平方，是不同的计算。例如 $k=(0.2,0.5,0.3)^{\mathsf T}$、$T=1$ 时，该损失为 $0.2\times1+0.5\times0+0.3\times1=0.5$；预测数字的均值却是 1.1，其与目标之差的平方只有 0.01。这里需要保留式~\eqref{l10:eq:lecture-loss} 中的运算顺序。
+
+\subsection{从损失求到 softmax 输入的梯度}
+
+目标标签固定时，$q[j]=(j-T)^2$ 是常数。
+损失对概率输出的导数首先是
+\begin{equation}
+ \frac{\partial E}{\partial k[i]}=q[i]=(i-T)^2.
+ \label{l10:eq:loss-k-gradient}
+\end{equation}
+再用式~\eqref{l10:eq:softmax-vjp-component}，得到
+\begin{align}
+ \frac{\partial E}{\partial z[m]}
+ &=\sum_i q[i]k[i]\bigl(\delta_{i,m}-k[m]\bigr)\\
+ &=k[m]q[m]-k[m]\sum_i k[i]q[i]\\
+ &=\boxed{k[m]\bigl(q[m]-E\bigr).}
+ \label{l10:eq:loss-z-gradient}
+\end{align}
+向量形式是 $g_z=k\mathbin{\odot}(q-E\mathbf{1})$。对于目标类别 $m=T$，有 $g_z[T]=-k[T]E\le0$；沿负梯度方向调整该分数，会推动其上升。对于其他类别，调整方向由该类别的代价 $q[m]$ 相对于当前平均代价 $E$ 的大小决定。
+
+继续使用 $z=(0.2,0.4,0.8)^{\mathsf T}$ 的三类别例子，并取 $T=1$，则 $q=(1,0,1)^{\mathsf T}$，有
+\begin{equation}
+ E\approx0.697936,\qquad
+ g_z\approx(0.074703,-0.210821,0.136118)^{\mathsf T}.
+\end{equation}
+梯度分量之和为 0，可以由公式直接核验：$\sum_m k[m](q[m]-E)=E-E=0$。这与 softmax 对分数共同平移不敏感的性质一致。
+
+\subsection{梯度下降与链式法则}
+
+梯度（gradient）记录损失对各个参数的局部变化率。设迭代编号为 $r$，学习率为 $\epsilon>0$，一次梯度下降（gradient descent）更新写成
+\begin{equation}
+ \Theta^{(r+1)}=\Theta^{(r)}-\epsilon\,\Delta\Theta,
+ \qquad \Delta\Theta=\nabla_{\Theta}E.
+ \label{l10:eq:gradient-descent}
+\end{equation}
+多个样本共同参与更新时，$\Delta\Theta$ 可以是相应样本梯度的累加量。学习率控制沿梯度方向移动的幅度。实际参数改变量是 $-\epsilon\Delta\Theta$，而 $\Delta\Theta$ 表示更新时所用的梯度。
+
+链式法则把复合函数的导数拆成相邻计算环节的导数。例如 $\Theta$ 先影响中间量 $u$，$u$ 再影响损失 $E$，就有 $\partial E/\partial\Theta=(\partial E/\partial u)(\partial u/\partial\Theta)$。在向量网络中，同一个变量可能通过多个后继输出影响损失，因此还需要把这些路径的贡献相加。
+
+负梯度方向的局部下降性质来自一阶展开。令 $g=\nabla E(\Theta)$，在可微且步长足够小的情形下，$E(\Theta-\epsilon g)\approx E(\Theta)-\epsilon\lVert g\rVert^2$。这解释了更新式中的负号。
+
+\subsection{单层平方误差的完整更新}
+
+\subsubsection{局部导数与参数导数}
+先考虑一个标量输入、标量输出的线性模型 $y=wx+b$，目标值为 $t$，损失取
+\begin{equation}
+ E_{\mathrm{sq}}=\frac12(y-t)^2.
+ \label{l10:eq:scalar-loss}
+\end{equation}
+$t$ 是该回归模型的数值目标。这个平方误差直接比较标量预测与目标，与前面的概率加权数字距离损失具有不同含义。因子 $1/2$ 抵消求导时产生的 2，使输出梯度为 $\partial E_{\mathrm{sq}}/\partial y=y-t$。同时，$\partial y/\partial w=x$，$\partial y/\partial b=1$，因此
+\begin{align}
+ \frac{\partial E_{\mathrm{sq}}}{\partial w}
+ &=\frac{\partial E_{\mathrm{sq}}}{\partial y}\frac{\partial y}{\partial w}
+ =(wx+b-t)x,\\
+ \frac{\partial E_{\mathrm{sq}}}{\partial b}&=wx+b-t.
+\end{align}
+由此得到配套的权重与偏置更新：
+\begin{equation}
+ w^{+}=w-\epsilon(wx+b-t)x,\qquad
+ b^{+}=b-\epsilon(wx+b-t).
+ \label{l10:eq:scalar-update}
+\end{equation}
+权重梯度包含输入 $x$，因为同样大小的权重变化，会在不同输入下造成不同大小的输出变化。偏置直接加到输出上，其局部导数是 1。
+
+\subsubsection{数值核算}
+取 $x=2$、$t=3$、$w=0.5$、$b=0$、$\epsilon=0.1$。
+更新前，$y=1$，$E_{\mathrm{sq}}=2$；输出梯度为 $-2$，权重梯度为 $-4$，偏置梯度为 $-2$。同一次更新使用这些在旧参数处计算的梯度，得到 $w^+=0.9$、$b^+=0.2$。再次前向计算，有 $y^+=2$、$E_{\mathrm{sq}}^+=0.5$。这个例子把前向求值、误差、局部导数、参数梯度与更新后的结果完整连接起来。

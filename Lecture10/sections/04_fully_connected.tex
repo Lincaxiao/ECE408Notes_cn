@@ -1,0 +1,50 @@
+\subsection{全连接层、网络层次与参数维度}
+
+全连接层（fully-connected layer）让每个输出单元都连接到全部输入。若输入有 $N$ 个分量、输出有 $M$ 个分量，每个输出都需要一个长度为 $N$ 的权重向量；把这些权重向量逐行排列，就得到权重矩阵 $W$。
+
+\begin{definitionbox}[unbreakable,title={矩阵与索引约定}]
+后续计算采用列向量：$x\in\mathbb{R}^N$、$W\in\mathbb{R}^{M\times N}$、$b\in\mathbb{R}^M$。$W[i,j]$ 表示输入 $j$ 到输出 $i$ 的权重，即\textbf{行对应输出，列对应输入}。因此，$4\to3$ 层使用 $3\times4$ 权重矩阵；若按输入在行、输出在列排列权重，则须转置后参与这里的列向量乘法。连接数与参数量不因排列方向而改变。
+\end{definitionbox}
+
+在这一约定下，全连接层的加权和是 $\mathrm{fc}=Wx+b$，其第 $i$ 个分量为
+\begin{equation}
+ \mathrm{fc}[i]=\sum_{j=0}^{N-1}W[i,j]x[j]+b[i].
+ \label{l10:eq:fc-component}
+\end{equation}
+每个输出再经过激活函数（activation function）$\phi$，得到 $h[i]=\phi(\mathrm{fc}[i])$。对于逐元素激活，$h=\phi(Wx+b)$ 中的 $\phi$ 分别作用于向量各个分量。点积负责组合输入，偏置调节加权和的位置，激活函数给出非线性变换。
+
+网络中的输入层（input layer）存放输入数据，隐藏层（hidden layer）产生中间表示，输出层（output layer）产生用于最终任务的输出。全连接网络包含多个这样的计算层时，就形成多层感知机（multilayer perceptron，MLP）。图中节点表示一个计算单元，连线表示参与加权求和的连接。
+
+参数计数由全连接结构直接得到。输入为 $N$ 维、输出为 $M$ 维的一层有 $MN$ 个权重与 $M$ 个偏置，因此参数总数为 $M(N+1)$。
+以 $4\to4\to3$ 的网络为例，在列向量约定下，第一层为 $W_1\in\mathbb{R}^{4\times4}$、$b_1\in\mathbb{R}^4$，第二层为 $W_2\in\mathbb{R}^{3\times4}$、$b_2\in\mathbb{R}^3$。第二层的 3 行分别生成 3 个输出，每一行都读取隐藏层的 4 个分量。整个网络共有 $4\times4+4+3\times4+3=35$ 个可调参数。
+
+\subsection{手写数字识别网络的具体结构}
+
+MNIST 手写数字识别例子以 $28\times28$ 的灰度图像为输入，输出数字 0 至 9 中的一个类别。给出的训练数据有 60,000 张带有人类标注的图像。把一张图像的像素按固定顺序展开，就得到长度为 $28\times28=784$ 的输入向量。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.77\linewidth]{mnist_mlp.png}
+\caption{$784\to10\to10$ 的手写数字识别网络。每个隐藏单元对 784 个像素加权求和，并经过激活函数；输出端有 10 个类别分量。}
+\label{l10:fig:mnist}
+\end{figure}
+
+该例包含 784 个输入节点、10 个隐藏节点和 10 个输出节点。两层参数的形状与数量列在表~\ref{l10:tab:mnist-parameters} 中。输入层不额外引入一组权重；参数属于输入到隐藏层、隐藏层到输出层这两次可调变换。
+
+\begin{table}[H]
+\centering
+\caption{数字识别网络的参数维度与计数。}
+\label{l10:tab:mnist-parameters}
+\begin{tabular}{lcccc}
+\toprule
+变换 & 权重形状 & 偏置形状 & 权重数 & 参数合计\\
+\midrule
+$784\to10$ & $10\times784$ & $10\times1$ & 7,840 & 7,850\\
+$10\to10$ & $10\times10$ & $10\times1$ & 100 & 110\\
+\midrule
+总计 & & & 7,940 & \textbf{7,960}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+XOR 例子中，权重可以根据逻辑规则直接构造。数字识别中，需要用带标签的数据自动调整这 7,960 个参数，使输入像素与正确类别之间的关系编码到网络中。训练所需的两个进一步组成部分是：如何从连续输出获得类别信息，以及如何用输出误差计算参数的调整方向。

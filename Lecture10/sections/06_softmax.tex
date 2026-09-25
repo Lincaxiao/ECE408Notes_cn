@@ -1,0 +1,71 @@
+\subsection{Softmax 与互斥类别的概率}
+
+\subsubsection{归一化的类别输出}
+对于 $C$ 个互斥类别，模型输出的各个类别概率应当非负，且总和为 1。对每个分量独立使用 sigmoid，虽然能把各分量限制在 $(0,1)$，却不会自动保证总和为 1；ReLU 也不提供这种归一化。因此，需要把分数向量进一步转换为类别概率向量。
+
+给定 $z=(z[0],\ldots,z[C-1])^{\mathsf T}$，softmax 定义为
+\begin{equation}
+ k[i]=\frac{e^{z[i]}}{\sum_{j=0}^{C-1}e^{z[j]}},
+ \qquad i=0,\ldots,C-1.
+ \label{l10:eq:softmax}
+\end{equation}
+每个分量的分子都为正，分母又是全部分子的总和，因此 $k[i]>0$ 且 $\sum_i k[i]=1$。较大的分数对应较大的概率；最终分类可以取 $\widehat T=\operatorname*{arg\,max}_i k[i]$。
+
+取 $z=(0.2,0.4,0.8)^{\mathsf T}$，则
+\begin{equation}
+ e^z\approx(1.2214,1.4918,2.2255)^{\mathsf T},\qquad
+ k\approx(0.2473,0.3021,0.4506)^{\mathsf T}.
+\end{equation}
+采用从 0 开始的类别编号时，预测类别为 2。分数 $z[2]=0.8$ 和概率 $k[2]\approx0.4506$ 是两个不同的量：概率需要把这一分数与全部其他类别的分数共同归一化。
+
+归一化还带来平移不变性：对所有分数加同一个常数 $c$，分子和分母都乘以 $e^c$，因此 $\operatorname{softmax}(z+c\mathbf{1})=\operatorname{softmax}(z)$。这表明输出取决于类别之间的相对分数。
+
+\begin{keybox}[title={有界分数对概率范围的限制}]
+两层 sigmoid 网络的每个分数均满足 $0<z[i]<1$。当类别数 $C\ge2$ 时，
+\[
+ k[i]=\frac{1}{1+\sum_{j\ne i}e^{z[j]-z[i]}}
+ <\frac{1}{1+(C-1)e^{-1}}
+ =\frac{e}{e+C-1}.
+\]
+因此，$C=10$ 时任意类别的概率都小于约 $0.232$。这一上界来自 softmax 之前的 sigmoid 对分数范围的限制；它不限制通过最大概率索引得到的分类准确率。
+\end{keybox}
+
+\subsubsection{Softmax 的导数为什么包含其他类别}
+改变一个分数 $z[m]$ 会同时改变它自己的分子，以及所有类别共享的分母。因此，$k[i]$ 不仅依赖 $z[i]$，还依赖其他类别的分数。这个耦合关系使 softmax 的导数成为一个矩阵。
+
+令 $S=\sum_j e^{z[j]}$。用商法则展开，有
+\begin{align}
+ \frac{\partial k[i]}{\partial z[m]}
+ &=\frac{\delta_{i,m}e^{z[i]}S-e^{z[i]}e^{z[m]}}{S^2}\\
+ &=k[i]\bigl(\delta_{i,m}-k[m]\bigr),
+ \label{l10:eq:softmax-jac-entry}
+\end{align}
+其中 $\delta_{i,m}$ 是克罗内克符号（Kronecker delta）：$i=m$ 时为 1，否则为 0。这就给出两种情况：
+\begin{equation}
+ \frac{\partial k[i]}{\partial z[m]}=
+ \begin{cases}
+ k[i](1-k[i]),&i=m,\\
+ -k[i]k[m],&i\ne m.
+ \end{cases}
+\end{equation}
+自身分数上升会提高自身概率；某个其他类别的分数上升，则会降低当前类别的概率。这种联动来自总概率固定为 1 的要求。
+
+令雅可比矩阵 $J_{\!s}[i,m]=\partial k[i]/\partial z[m]$，则
+\begin{equation}
+ J_{\!s}=\operatorname{diag}(k)-kk^{\mathsf T}.
+ \label{l10:eq:softmax-jacobian}
+\end{equation}
+若已经知道 $g_k[i]=\partial E/\partial k[i]$，链式法则给出
+\begin{align}
+ g_z[m]&=\frac{\partial E}{\partial z[m]}
+ =\sum_i g_k[i]\frac{\partial k[i]}{\partial z[m]}\\
+ &=k[m]\left(g_k[m]-\sum_i k[i]g_k[i]\right),
+ \label{l10:eq:softmax-vjp-component}\\
+ g_z&=k\mathbin{\odot}\left(g_k-(k^{\mathsf T}g_k)\mathbf{1}\right).
+ \label{l10:eq:softmax-vjp}
+\end{align}
+符号 $\odot$ 表示相同形状向量的逐元素乘法，$\mathbf{1}$ 表示全 1 向量。式~\eqref{l10:eq:softmax-vjp} 只需要一个内积与逐元素运算，就能完成这个导数传播；它与显式构造整个 $C\times C$ 雅可比矩阵后相乘的结果相同。
+
+\begin{keybox}[title={激活函数与 softmax 的作用范围}]
+Sigmoid 与 ReLU 在这里逐元素作用于各个单元；softmax 同时读取一个样本的所有类别分数，并把它们耦合成归一化概率。前者的局部导数可以逐元素相乘，后者的导数还包含类别之间的交叉项。
+\end{keybox}

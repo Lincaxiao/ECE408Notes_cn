@@ -60,6 +60,8 @@ TexOutput/
 /Lecture*/REVIEW_LOG.md
 /Lecture*/verification.json
 /Lecture*/code/validation_results.json
+/Lecture10/checks/document_validation.json
+/Lecture10/checks/numeric_results.json
 
 # Compiled examples and Python caches
 __pycache__/

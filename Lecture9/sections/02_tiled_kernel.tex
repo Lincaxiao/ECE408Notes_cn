@@ -1,0 +1,95 @@
+\Needspace{20\baselineskip}
+\section{二维分块卷积的线程组织与实现}
+\label{l9:sec:kernel}
+
+\subsection{输入范围与网格步长}
+一个边长为 $T$ 的输出分块，在每个方向上都需要额外的左右或上下邻域。以列方向为例，输出列范围为 $b_xT$ 到 $b_xT+T-1$；最左侧输出需要向左延伸 $r$ 列，最右侧输出需要向右延伸 $r$ 列，因此输入列范围为 $b_xT-r$ 到 $b_xT+T-1+r$。含首尾两端，共有
+\begin{equation}
+ S=(b_xT+T-1+r)-(b_xT-r)+1=T+2r=T+m-1
+ \label{l9:eq:input-width}
+\end{equation}
+列。行方向完全相同，故完整输入分块是 $S\times S$。当 $m=5$ 时，每侧增加 2 个元素，输入边长为 $T+4$。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.70\textwidth]{input_output_halo.png}
+\caption{计算输出分块两个相对角点时，其输入窗口分别延伸到左上与右下的光环区域。白色输出区域外的黄色边框也是输入分块的一部分。}
+\label{l9:fig:halo}
+\end{figure}
+
+策略 2 的线程块大小为 $(S,S,1)$，每个线程负责输入分块中的一个位置。网格大小则由输出覆盖范围决定：
+\begin{equation}
+ \mathrm{gridDim.x}=\left\lceil\frac{W}{T}\right\rceil,
+ \qquad
+ \mathrm{gridDim.y}=\left\lceil\frac{H}{T}\right\rceil.
+ \label{l9:eq:grid}
+\end{equation}
+相邻块的输出起点相差 $T$，恰好使输出分块相接；输入起点也相差 $T$，因此相邻输入分块重叠 $S-T=m-1$ 列或行。若用 $S$ 作为输出步长，两个相邻输出分块之间会留下宽度为 $m-1$ 的缺口。
+
+例如 $H=37,W=53,T=16,m=5$，应建立 $4\times3$ 个线程块，每块有 $20\times20=400$ 个线程。右下角块的输出起点为 $(32,48)$，只有 $5\times5$ 个输出落在图像内，但该块仍按完整的输入分块组织加载与同步。
+
+\subsection{三组坐标的对应关系}
+\label{l9:subsec:coordinates}
+线程局部坐标 $(t_y,t_x)$ 同时参与输出坐标与输入加载坐标的构造，两者之间相差半径 $r$：
+\begin{equation}
+ \begin{aligned}
+ y_o&=b_yT+t_y, & x_o&=b_xT+t_x,\\
+ y_i&=y_o-r,   & x_i&=x_o-r.
+ \end{aligned}
+ \label{l9:eq:coordinates}
+\end{equation}
+每个线程把 $N[y_i,x_i]$ 放入共享内存的 \mbox{\code{tile[ty][tx]}}。当 $t_y<T$ 且 $t_x<T$ 时，它还负责输出 $P[y_o,x_o]$。其余线程虽然可以算出形式上的 $(y_o,x_o)$，但这些坐标并不代表本块实际负责的输出。
+
+共享内存中的位置 $(s_y,s_x)$ 对应的全局输入坐标为
+\begin{equation}
+ (b_yT-r+s_y,\ b_xT-r+s_x).
+ \label{l9:eq:shared-to-global}
+\end{equation}
+将 $s_y=t_y+i,s_x=t_x+j$ 代入，可得 $\mathrm{tile}[t_y+i][t_x+j]$ 恰好对应 $\widetilde N[y_o-r+i,x_o-r+j]$。于是卷积窗口可直接从共享内存局部坐标 $(t_y,t_x)$ 开始访问，不再在内层循环里减半径。
+
+\begin{keybox}[title={加载的元素与输出的中心}]
+线程 $(t_y,t_x)$ 加载的是其输出窗口的左上角输入。输出中心对应的输入位于共享内存 $(t_y+r,t_x+r)$，通常由另一个线程加载。因此参加输出计算的是线程坐标中的左上 $T\times T$ 区域；无需把计算条件改成 $r\le t_x,t_y<r+T$。
+\end{keybox}
+
+取 $T=8,m=5$ 和块 $(b_x,b_y)=(1,2)$。输入分块覆盖行 $14$--$25$、列 $6$--$17$；输出分块覆盖行 $16$--$23$、列 $8$--$15$。线程 $(t_y,t_x)=(0,0)$ 加载 $N[14,6]$，计算 $P[16,8]$；线程 $(7,7)$ 加载 $N[21,13]$，计算 $P[23,15]$；线程 $(11,11)$ 加载 $N[25,17]$，只参与加载。最后这个输入正是右下角输出窗口需要的元素。
+
+\subsection{协作加载、补零与同步}
+所有 $S^2$ 个线程都向共享内存写入一个值。若 $0\le y_i<H$ 且 $0\le x_i<W$，就读取有效输入；否则写入 \mbox{\code{0.0f}}。这样，共享内存中的整个输入分块都已初始化，乘加循环可以统一访问一个完整窗口。
+
+输入越界与输出越界要分别判断。左上角线程可能加载一个负坐标位置，却仍要计算有效输出。例如第一块的线程 $(0,0)$ 加载输入坐标 $(-r,-r)$，需要写入零，但它负责的输出坐标是 $(0,0)$。反过来，右边缘某个线程的输出坐标可能超过 $W-1$，而其左移 $r$ 后的输入坐标仍然有效，且可能被附近的有效输出使用。
+
+加载完成后执行 \mbox{\code{__syncthreads()}}。其位置必须在所有线程的加载或补零之后，在任何线程读取他人写入的共享数据之前。由于一个输出窗口包含多个线程写入的元素，单个线程完成自己的写入，并不表示整个窗口都已经准备好。
+
+\begin{keybox}[title={两个判断、一个公共同步点}]
+先根据输入坐标决定“读取输入”或“写入零”，随后让整个线程块经过同步点，最后根据线程角色及输出边界决定是否计算和写回。不能在同步之前仅因某个线程没有有效输出而提前退出，否则既可能漏掉其他线程需要的加载，也会破坏这一统一的协作结构。
+\end{keybox}
+
+\subsection{输出计算与写回条件}
+参加计算的线程满足 $t_x<T$ 且 $t_y<T$。它将累加器初始化为零，执行 $m\times m$ 次乘加，然后只在 $y_o<H$ 且 $x_o<W$ 时写回。行优先存储（row-major storage）中，二维位置 $(y,x)$ 的线性偏移是 $yW+x$。
+
+共享内存访问的最大行下标为 $(T-1)+(m-1)=S-1$，列下标也相同。因此，只要加载分块确实分配为 $S\times S$，上述计算范围与共享内存范围就一致。这里的边界检查分别承担不同任务：线程坐标限制本块拥有的输出，输出坐标限制整幅图像内的写入位置。
+
+\textbf{矩形图像的边界条件。} 行坐标应与高度比较，即 \mbox{\code{row_o < Height}}；列坐标应与宽度比较，即 \mbox{\code{col_o < Width}}。混用高度与宽度会使矩形图像出现漏写或越界。权重边长由编译期常量 \mbox{\code{MASK_WIDTH}} 指定，两个循环均按这一边长遍历。
+
+\subsection{二维策略 3 的对应变化}
+策略 3 将共享内存缩为 $T\times T$，线程 $(t_y,t_x)$ 加载其输出中心对应的核心输入。此时权重位置 $(i,j)$ 需要访问的核心区局部坐标为 $(t_y-r+i,t_x-r+j)$。若两个局部坐标均落在 $[0,T)$，从共享内存读取；否则根据全局坐标读取光环，越过整幅图像边界时按零处理。
+
+因此，策略 2 在加载时一次性解决输入分块边界，乘加循环统一读取共享内存；策略 3 在每次乘加时判断目标属于核心区还是光环区。后者不需要仅负责光环加载的线程，但同一线程束（warp）中的线程可能在内层循环选择不同的读取分支。这一差异同时影响全局访问次数和控制流，后续复用公式要与具体的加载方式对应。
+
+\subsection{完整内核与主机启动}
+\label{l9:subsec:complete-kernel}
+下面将加载、同步、计算与写回连成一个完整内核。示例取 $T=16,m=5$，每块 400 个线程，分配 400 个单精度共享内存元素；其中 256 个线程具有输出角色。\mbox{\code{Mc}} 在启动前由主机填入，输入与输出使用互不重叠的设备缓冲区。
+
+\noindent\begin{minipage}{\textwidth}
+\lstinputlisting[style=cuda,caption={二维策略 2：完整输入分块的协作加载与输出计算},label={l9:lst:kernel}]{code/convolution2d_strategy2.cuh}
+\end{minipage}
+
+主机端的关键区别仍是“块尺寸用 $S$，网格覆盖用 $T$”。以下接口负责权重复制、参数检查和内核启动，并返回相应错误状态。\mbox{\code{h_Mc}} 指向行优先的 $m\times m$ 主机权重数组，\mbox{\code{d_N}} 与 \mbox{\code{d_P}} 已分别分配至少 $HW$ 个单精度元素。
+
+\noindent\begin{minipage}{\textwidth}
+\lstinputlisting[style=cuda,caption={主机端的启动接口与设备资源检查},label={l9:lst:launch}]{code/launch_convolution.cu}
+\end{minipage}
+
+此接口返回的是参数检查、权重复制或内核启动阶段的错误。调用方需要在取得结果前完成相应的设备同步或数据传回，并处理执行阶段可能返回的错误。代码中的资源检查也说明，$S$ 不能仅由复用公式任意增大：线程块还必须满足实际设备的单块线程数、各维大小及共享内存容量限制。
+
+\FloatBarrier

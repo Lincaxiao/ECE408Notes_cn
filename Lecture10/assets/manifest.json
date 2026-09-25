@@ -1,0 +1,101 @@
+[
+  {
+    "file": "representation_xy.png",
+    "source_page": 25,
+    "crop_points": [
+      330,
+      88,
+      744,
+      487
+    ],
+    "scale": 2.7
+  },
+  {
+    "file": "representation_polar.png",
+    "source_page": 26,
+    "crop_points": [
+      326,
+      155,
+      798,
+      463
+    ],
+    "scale": 2.7
+  },
+  {
+    "file": "ml_evolution.png",
+    "source_page": 34,
+    "crop_points": [
+      398,
+      30,
+      862,
+      509
+    ],
+    "scale": 2.7
+  },
+  {
+    "file": "xor_network.png",
+    "source_page": 40,
+    "crop_points": [
+      266,
+      244,
+      880,
+      505
+    ],
+    "scale": 2.7
+  },
+  {
+    "file": "mnist_mlp.png",
+    "source_page": 49,
+    "crop_points": [
+      42,
+      131,
+      565,
+      466
+    ],
+    "scale": 2.7
+  },
+  {
+    "file": "forward_backward.png",
+    "source_page": 57,
+    "crop_points": [
+      122,
+      74,
+      953,
+      502
+    ],
+    "scale": 2.7
+  },
+  {
+    "file": "training_validation.png",
+    "source_page": 66,
+    "crop_points": [
+      422,
+      266,
+      916,
+      496
+    ],
+    "scale": 2.7
+  },
+  {
+    "file": "capacity_gap.png",
+    "source_page": 68,
+    "crop_points": [
+      170,
+      200,
+      790,
+      497
+    ],
+    "scale": 2.7
+  },
+  {
+    "file": "weights_visualization.png",
+    "source_page": 69,
+    "crop_points": [
+      37,
+      96,
+      891,
+      467
+    ],
+    "scale": 2.7
+  }
+]

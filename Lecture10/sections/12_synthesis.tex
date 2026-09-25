@@ -1,0 +1,31 @@
+\section{关键公式与结构关系}
+\subsection{从输入到参数更新}
+一个全连接层先计算 $\mathrm{fc}=Wx+b$，再由激活函数产生下一层输入。多个这样的层组合后，网络获得逐层变换数据表示的能力。分类输出经 softmax 归一化为概率，损失函数再把概率与标签联系起来。
+
+\begin{keybox}[title={本讲两层网络的计算链}]
+设 $\sigma$ 为 sigmoid，$T$ 为数字标签，$q[j]=(j-T)^2$。前向计算为
+\begin{align*}
+\mathrm{fc}_1&=W_1x+b_1,&y&=\sigma(\mathrm{fc}_1),\\
+\mathrm{fc}_2&=W_2y+b_2,&z&=\sigma(\mathrm{fc}_2),\\
+k&=\operatorname{softmax}(z),&E&=k^{\mathsf T}q.
+\end{align*}
+反向传播按相反顺序传递导数：
+\begin{align*}
+g_z&=k\mathbin{\odot}(q-E\mathbf{1}),\\
+\delta_2&=g_z\mathbin{\odot} z\mathbin{\odot}(\mathbf{1}-z),\\
+\delta_1&=(W_2^{\mathsf T}\delta_2)
+\mathbin{\odot} y\mathbin{\odot}(\mathbf{1}-y).
+\end{align*}
+因此 $\nabla_{W_2}E=\delta_2y^{\mathsf T}$、$\nabla_{W_1}E=\delta_1x^{\mathsf T}$，偏置梯度分别为 $\delta_2$ 与 $\delta_1$。参数按 $\Theta\leftarrow\Theta-\epsilon\nabla_\Theta E$ 更新。
+\end{keybox}
+
+\subsection{全连接层的三个梯度}
+对于 $W\in\mathbb{R}^{M\times N}$、$x\in\mathbb{R}^N$ 和上游梯度 $\delta=\partial E/\partial\mathrm{fc}\in\mathbb{R}^M$，三个基本关系为
+\begin{equation*}
+\boxed{\nabla_W E=\delta x^{\mathsf T}},\qquad
+\boxed{\nabla_b E=\delta},\qquad
+\boxed{\nabla_x E=W^{\mathsf T}\delta}.
+\end{equation*}
+权重梯度把前向输入与反向导数组合成外积；输入梯度把误差信息传回上一层；偏置梯度直接接收该层导数。对一批样本求和后，外积累加成为矩阵乘法，偏置梯度成为沿样本维的求和。
+
+表示学习建立输入与输出的关系；反向传播计算导数，梯度下降据此更新参数，小批量规定每次更新的样本范围。验证与测试用于评估模型对新输入的泛化能力。

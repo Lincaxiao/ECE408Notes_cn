@@ -1,0 +1,103 @@
+\section{例题与关键结论}
+\label{l9:sec:examples}
+
+\subsection{角块的全局读取缩减倍数}
+\textbf{题目。} 对 $32\times32$ 输入图像使用 $5\times5$ 权重和 $16\times16$ 输出分块，采用策略 1。求线程块 $(0,0)$ 因共享内存复用而获得的输入全局读取缩减倍数。
+
+\textbf{输出范围与输入范围。} 本块负责输出行、列 $0$--$15$，半径 $r=2$。完整输入分块的坐标范围为 $-2$--$17$，边长为 20；与有效图像相交后，实际读取的行、列范围都是 $0$--$17$。因此不同有效输入数为 $B=18\times18=324$。其余 $20^2-18^2=76$ 个共享内存位置补零。
+
+\textbf{直接读取计数。} 输出 $(0,0)$ 需要 $3\times3=9$ 个有效输入，$(0,1)$ 需要 $3\times4=12$ 个，第 0 行的其余 14 个输出各需要 $3\times5=15$ 个。第 1 行有四行有效输入，后面 14 行各有五行有效输入。逐行统计为
+\begin{equation}
+ \begin{aligned}
+ A_0&=9+12+15\times14=231,\\
+ A_1&=12+16+20\times14=308,\\
+ A_y&=15+20+25\times14=385,\quad 2\le y\le15,\\
+ A&=231+308+14\times385=5929.
+ \end{aligned}
+ \label{l9:eq:corner-rows}
+\end{equation}
+最终结果为
+\begin{equation}
+ \boxed{R=\frac{5929}{324}\approx18.30.}
+ \label{l9:eq:corner-answer}
+\end{equation}
+
+\textbf{乘积验证。} 单个方向的有效邻域长度之和为 $3+4+14\times5=77$，二维直接读取数就是 $77^2=5929$。这与式\eqref{l9:eq:boundary-general}及逐行展开一致。采用策略 1 影响的是 256 个线程如何分多步装入这些输入；只要完整输入被正确装入且每个有效元素只读一次，计数结果仍由 324 个不同有效输入决定。
+
+把本题当成内部块，会得到 $16^2\times25/20^2=16$。这一结果对应的是“400 个输入位置全部有效”的另一种位置条件。本题角块应同时排除直接实现中的越界读取和分块加载中的虚拟输入，得到 $18.30$。
+
+\subsection{输入型线程块中的控制分歧}
+\textbf{题目。} 二维输出分块为 $30\times30$，权重为 $3\times3$，输入分块为 $32\times32$。采用策略 2，计算输出时每个线程块中有多少个线程束发生控制分歧？
+
+\textbf{线程束与行的对应。} 这里每个线程束含 32 个线程。二维块按 $x$ 坐标优先展平，线性编号为 $t=t_x+32t_y$，线程束编号是 $w=\lfloor t/32\rfloor=t_y$。因此每一行恰好构成一个线程束，总计 $1024/32=32$ 个线程束。
+
+\textbf{逐线程束检查。} 输出角色条件为 $t_y<30$ 且 $t_x<30$。对于 $w=0$--$29$，同一线程束中 $t_x=0$--$29$ 的 30 个线程进入乘加循环，$t_x=30,31$ 的两个线程不进入，故这 30 个线程束都有控制分歧。对于 $w=30,31$，所有线程都不满足行条件，整个线程束统一跳过计算。
+
+\begin{table}[H]
+\centering\small
+\caption{计算角色判断在各线程束中的结果}
+\label{l9:tab:warp-divergence}
+\begin{tabular}{@{}lrrrr@{}}\toprule
+线程束编号 & 线程束数量 & 每束计算线程 & 每束不计算线程 & 是否分歧\\\midrule
+$0$--$29$ & 30 & 30 & 2 & 是\\
+$30$--$31$ & 2 & 0 & 32 & 否\\\bottomrule
+\end{tabular}
+\end{table}
+
+因此，\textbf{有 30 个线程束发生计算角色分歧，2 个线程束没有该分歧}。全部线程统一不执行某个分支，仍然是统一的控制流。所有 $32\times32$ 个线程都参与输入分块的加载或补零；上述答案只统计计算角色条件，图像边缘的加载和写回判断应按实际位置另行检查。
+
+当输入块的边长 $S$ 不等于 32 时，一个线程束可能跨越多行。这时应先用 $t_x=t\bmod S$、$t_y=\lfloor t/S\rfloor$ 恢复局部坐标，再检查每组线程的条件取值，不能继续把一行直接当成一个线程束。
+
+\subsection{A40 算例中的带宽平衡与复用门槛}
+\textbf{题目。} 采用 A40 算例给出的 FP32 峰值 $37.4\,\mathrm{TFLOP/s}$、内存容量 48 GB 和带宽 $696\,\mathrm{GB/s}$。求充分供给计算峰值所需的字节／FLOP 比，并说明卷积输入需要多少复用。
+
+\textbf{平衡点的两种单位。} 这一比值由带宽与计算峰值决定，内存容量不参与计算。统一单位后，可得
+\begin{equation}
+ \begin{aligned}
+ b_{\mathrm{balance}}&=\frac{696}{37400}
+ \approx0.0186096\,\mathrm{B}/\mathrm{FLOP}
+ \approx0.019\,\mathrm{B}/\mathrm{FLOP},\\
+ I_{\mathrm{balance}}&=\frac{37400}{696}
+ \approx53.7356\,\mathrm{FLOP}/\mathrm{B}.
+ \end{aligned}
+ \label{l9:eq:a40-balance}
+\end{equation}
+也就是每从全局内存取得一个字节，需要支持约 53.7 次浮点操作，才与这一峰值计算／带宽比平衡。
+
+\textbf{输入复用门槛。} 上述 $53.7$ 的单位是 FLOP/B。要得到相对于未分块卷积的输入复用倍数，还要使用其基准 $b_0=2\,\mathrm{B}/\mathrm{FLOP}$，或等价的 $I_0=0.5\,\mathrm{FLOP}/\mathrm{B}$：
+\begin{equation}
+ \boxed{R_{\min}
+ =\frac{b_0}{b_{\mathrm{balance}}}
+ =\frac{I_{\mathrm{balance}}}{I_0}
+ =\frac{2\times37400}{696}
+ \approx107.47.}
+ \label{l9:eq:a40-reuse}
+\end{equation}
+从单个输入元素看也一样：4 字节需要支持约 $4\times53.7356=214.94$ FLOP，而一个输入的一次卷积使用贡献两次 FLOP，故需要约 $214.94/2=107.47$ 次平均使用。推算时保留未舍入的带宽比，可以避免过早使用 $0.019$ 带来的数值偏差。
+
+\begin{keybox}[title={三个量的区别}]
+$0.01861\,\mathrm{B}/\mathrm{FLOP}$ 是峰值平衡所允许的字节／操作比；$53.74\,\mathrm{FLOP}/\mathrm{B}$ 是它的倒数；$107.47$ 是在未分块卷积基准之上所需的无量纲输入复用倍数。前两个量由设备算例的带宽与峰值给出，第三个量还依赖算法的基准数据使用方式。
+\end{keybox}
+
+\subsection{关键公式与实现关系}
+二维分块卷积的实现与分析可以按同一条依赖关系组织：先确定输出分块，向外扩展出输入分块，再把输入位置分配给线程，最后统计这些加载支撑的有效计算。表\ref{l9:tab:synthesis}汇总了其中的关键关系。
+
+\begin{table}[htbp]
+\centering\small
+\caption{几何、线程、复用与吞吐之间的关系}
+\label{l9:tab:synthesis}
+\begin{tabularx}{\textwidth}{@{}p{0.17\textwidth}p{0.39\textwidth}Y@{}}\toprule
+问题 & 核心关系 & 适用条件或含义\\\midrule
+输入分块 & $S=T+m-1=T+2r$ & 输出每侧扩展半径 $r$。\\
+块与网格 & 块为 $S\times S$；网格按 $\lceil W/T\rceil\times\lceil H/T\rceil$ & 策略 2；输出步长为 $T$。\\
+输入坐标 & $y_i=y_o-r,\ x_i=x_o-r$ & 所有线程分别加载或补零。\\
+输出计算 & $t_y<T,\ t_x<T$；访问 $\mathrm{tile}[t_y+i][t_x+j]$ & 同步后计算；写回还需输出边界判断。\\
+内部块复用 & $R_{1\mathrm D}=Tm/S$；$R_{2\mathrm D}=(Tm/S)^2$ & 完整加载；计输入全局读取。\\
+边界块复用 & $R=A/B$，$A,B$ 均只计有效输入 & 虚拟位置补零，不产生输入全局读取。\\
+带宽模型 & $b=2/R$；$I=R/2$ & 单精度乘加；只计输入读取。\\
+计算平衡 & $R_{\min}=b_0C_{\mathrm{peak}}/\mathcal B$ & 模型中的必要复用门槛。\\\bottomrule
+\end{tabularx}
+\end{table}
+
+核对代码时，输入边界、全块同步、计算角色和输出边界应依次成立；行坐标与高度比较，列坐标与宽度比较。核对计数时，先区分输入分块的存储位置数、真正发生的全局加载数，以及所有输出累计的输入使用次数。核对性能结论时，则将几何上的复用、资源允许的线程布局和带宽模型的上限分别算清，再建立它们之间的关系。
+\FloatBarrier

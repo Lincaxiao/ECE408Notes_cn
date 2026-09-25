@@ -1,0 +1,81 @@
+\Needspace{20\baselineskip}
+\section{分块规模与存储层次}
+\label{l9:sec:memory}
+
+\subsection{线程数量与共享内存容量}
+\subsubsection{每块的线程预算}
+策略 2 为每个输入位置配置一个线程，因此每块的线程数、共享内存字节数及输出角色比例分别为
+\begin{equation}
+ n_{\mathrm{threads}}=S^2,\qquad
+ q_{\mathrm{shared}}=4S^2\,\mathrm{B},\qquad
+ \eta_{\mathrm{compute}}=\frac{T^2}{S^2}.
+ \label{l9:eq:block-resources}
+\end{equation}
+$\eta_{\mathrm{compute}}$ 只表示具有输出计算角色的线程比例。$T=8,m=5$ 时它是 $64/144\approx44.4\%$；$T=16,m=5$ 时为 $256/400=64\%$。这些线程在加载阶段全部有工作，因而这一比例也不能直接当成整个内核的效率或 SM 占用率。
+
+设设备报告的单块线程上限为 $L_{\mathrm{block}}$，这种实现必须满足
+\begin{equation}
+ (T+m-1)^2\le L_{\mathrm{block}},
+ \qquad
+ T\le\lfloor\sqrt{L_{\mathrm{block}}}\rfloor-m+1.
+ \label{l9:eq:tile-thread-limit}
+\end{equation}
+例如，若目标设备的单块线程上限为 1024，则 $m=5$ 时允许的最大输出边长是 28，$m=9$ 时是 24。$32\times32$ 输出配 $5\times5$ 权重需要 $36\times36=1296$ 个加载线程，已经超过这一示例上限；配 $9\times9$ 权重则需要 1600 个线程。几何表中的 $32\times32$ 或 $64\times64$ 分块仍可用于分析，但其实现必须采用不同的线程分工。
+
+由式\eqref{l9:eq:reuse2d}还可以得到 $R_{2\mathrm D}=m^2\eta_{\mathrm{compute}}$。这个关系把光环造成的线程角色开销与平均复用联系起来：固定权重边长时，核心区相对输入分块越大，平均复用越接近 $m^2$。
+
+\subsubsection{每个 SM 的驻留预算}
+流式多处理器（streaming multiprocessor，SM）可以同时容纳多个线程块。单块能否启动与多个块能否同时驻留，分别对应单块限制和 SM 总资源限制。设 SM 的线程容量为 $N_{\mathrm{SM}}$，共享内存容量为 $Q_{\mathrm{SM}}$；仅考虑这两项约束时，同时驻留的块数满足
+\begin{equation}
+ n_{\mathrm{resident}}\le
+ \min\!\left(
+ \left\lfloor\frac{N_{\mathrm{SM}}}{S^2}\right\rfloor,
+ \left\lfloor\frac{Q_{\mathrm{SM}}}{4S^2}\right\rfloor
+ \right).
+ \label{l9:eq:residency-budget}
+\end{equation}
+共享内存容量尚有剩余，并不保证还能增加线程块；线程容量可能已经先被占满。
+
+A100 的 SM 存储示例包含 256 KB 寄存器文件，以及 192 KB 的 L1 缓存／共享内存池，其中最多 164 KB 可划作共享内存。存储访问延迟可按粗略层级比较：寄存器约一个周期，共享内存和缓存／常量存储约数个周期，全局内存约数百个周期。这些量级用于解释把反复访问的数据移到片上的动机。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.86\textwidth]{sm_memory.png}
+\caption{A100 示例中的片上存储容量及粗略访问层次。线程容量与共享内存容量共同限制可驻留线程块的数量。}
+\label{l9:fig:sm-memory}
+\end{figure}
+\FloatBarrier
+
+若每个线程仅搬运一个 4 字节元素，2048 个线程总共只搬运 $2048\times4=8192$ 字节，约 8 KB。与一个 64 KB 共享内存容量的示例比较，线程数量与可用数据容量之间仍有很大差距。这个容量算式没有指定单块线程上限；实际 \mbox{\code{blockDim}} 仍需遵守式\eqref{l9:eq:tile-thread-limit}。
+
+\subsection{更大数据块的多元素分工}
+共享内存中的数据分块可以比物理线程块大。让每个线程分多轮加载输入、承担多个输出，就能用较少的物理线程处理更大的输出分块。此时，线程块大小描述同时参与协作的线程数，数据分块大小描述这一组线程最终准备和处理的数据范围，两者可以分别设计。
+
+一种组织方式是把二维输入分块展平。设共有 $n$ 个线程，线程的线性编号为 $t$；让它依次加载 $t,t+n,t+2n,\ldots$ 这些位置，直到覆盖全部 $S^2$ 个输入。加载和补零结束后统一同步，再按类似的循环分配 $T^2$ 个输出。扩大数据分块后，光环占比降低，但每个线程的顺序工作也会增加。
+
+\textbf{更大分块的带宽模型。} 对模型 B 和 $m=7$，$T=32$ 时 $R=(224/38)^2\approx34.75$，对应峰值比例约 $66.7\%$。取 $T=80$，则
+\begin{equation}
+ S=86,\qquad
+ R=\left(\frac{80\times7}{86}\right)^2\approx42.40,
+ \qquad U_B=0.0192R\approx81.4\%.
+ \label{l9:eq:larger-tile-example}
+\end{equation}
+该输入分块占 $86^2\times4=29584$ 字节。它需要多轮加载与多输出分工，不能直接建立 $86\times86$ 个线程。$81.4\%$ 是模型上限，尚未包括具体线程布局、同步和执行开销。
+
+\Needspace{16\baselineskip}
+\subsection{分银行存储与访问组织}
+寄存器文件和共享内存都分成多个存储体（bank），以提供并行的数据通路。多个访问争用同一存储体的服务能力时，可能发生存储体冲突（bank conflict），使流水线等待。数据已经位于片上，并不表示任意访问模式都能获得同样的吞吐。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{sm_pipeline.png}
+\caption{概念性的 SM 执行流水线。寄存器文件与 L1／共享内存均采用多存储体组织，交叉开关连接执行通路、操作数收集与存储通路。}
+\label{l9:fig:pipeline}
+\end{figure}
+
+图\ref{l9:fig:pipeline}中的线程束调度器决定待执行工作，经指令缓存与译码后，寄存器中的操作数通过交叉开关和操作数收集器送到执行单元。涉及存储访问时，数据通路还会经过 L1／共享内存一侧；访问更低层存储时连接到 L2 缓存和内存。寄存器与共享内存两处都可能成为数据供给的限制环节。
+
+全局内存则包含多个通道、存储体和页，并依赖成组传输提高效率。合并访存（memory coalescing）关注相邻线程的访问如何组合成有效的数据传输。行优先图像中，同一行相邻列的地址连续，所以让相邻的横向线程加载相邻列，有利于形成成组访问。输入读取次数相同的两个实现，也可能因为地址分布不同而产生不同的传输效率。
+
+L1 缓存的非一致性（non-coherence）意味着不能仅凭存在缓存，就假设不同缓存副本会随其他副本的写入自动保持一致。数据放置、访问组织和同步分别解决不同的问题。对分块卷积而言，完整的性能分析需要同时看输入复用、线程分工、共享内存访问及全局访问组织；单独提高 $R$ 只改善其中的输入供给部分。
+\FloatBarrier

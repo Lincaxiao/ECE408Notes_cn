@@ -1,0 +1,64 @@
+\section{核心概念与分块策略}
+\label{l9:sec:orientation}
+
+\subsection{卷积与模板计算}
+模板算法（stencil algorithm）按照固定的邻域模式更新数组元素。邻域规定一个输出依赖哪些输入；计算规则规定这些输入如何组合。二维卷积是其中一种：每个输出由一个二维邻域内的输入与相应权重相乘，再求和得到。其他模板可以只使用少量特定方向的邻点，例如二维五点模板、三维十三点有限差分模板，以及四维 Wilson--Dslash 模板。分块所利用的共同性质，是相邻输出的输入邻域存在重叠。
+
+设输入数组为 $N$，输出数组为 $P$，两者均有 $H$ 行、$W$ 列；权重矩阵为 $M$，边长为奇数 $m$，半径为 $r=(m-1)/2$。用 $\widetilde N$ 表示在数组范围外补零后的输入。为明确后续代码的下标关系，按其权重访问顺序写出计算式：
+\begin{equation}
+ P[y,x]=\sum_{i=0}^{m-1}\sum_{j=0}^{m-1}
+ M[i,j]\,\widetilde N[y-r+i,x-r+j].
+ \label{l9:eq:convolution}
+\end{equation}
+这里沿用权重按 $M[i,j]$ 直接访问的约定；公式的用途是说明计算邻域与数组下标。权重数组在代码中记为 \mbox{\code{Mc}}。例如 $m=5$ 时，每个内部输出需要一个 $5\times5$ 输入窗口，共进行 25 次乘法和 25 次累加。
+
+输出分块（output tile）是一组由同一线程块负责生成的相邻输出。输入分块（input tile）则包含计算这些输出所需的全部输入，其中超出输出分块对应核心区域的部分称为光环区（halo）。落到整个输入数组之外、由边界规则补出的值称为虚拟边界元素（ghost element）。光环描述块与块之间的邻域关系；虚拟边界元素描述整个数组以外的位置。内部块也有光环，但其光环通常仍是有效数组元素。
+
+\begin{table}[htbp]
+\centering\small
+\caption{二维方形分块的统一记号}
+\label{l9:tab:notation}
+\begin{tabularx}{\textwidth}{@{}lYl@{}}\toprule
+记号 & 含义 & 代码中的对应量\\\midrule
+$H,W$ & 输入和输出的行数、列数 & \mbox{\code{Height}}, \mbox{\code{Width}}\\
+$m,r$ & 权重边长及半径，$m=2r+1$ & \mbox{\code{MASK_WIDTH}}, \mbox{\code{RADIUS}}\\
+$T$ & 输出分块的边长 & \mbox{\code{TILE_WIDTH}}\\
+$S$ & 输入分块的边长，$S=T+m-1$ & \mbox{\code{INPUT_WIDTH}}\\
+$t_x,t_y$ & 线程块内的二维线程坐标 & \mbox{\code{threadIdx.x}}, \mbox{\code{threadIdx.y}}\\
+$b_x,b_y$ & 网格内的二维线程块坐标 & \mbox{\code{blockIdx.x}}, \mbox{\code{blockIdx.y}}\\\bottomrule
+\end{tabularx}
+\end{table}
+
+本讲的学习目标是理解分块卷积算法中的输入分块与输出分块，进一步分析卷积和模板计算中的数据复用，并为 Lab 4 做准备。
+
+\subsection{三种分块策略}
+线程可以围绕输出计算分工，也可以围绕输入加载分工。输出分工使一个线程自然地对应一个输出元素；加载分工则使一个线程对应一个需要装入共享内存的输入元素。由于输入分块通常更大，这两种分工对应不同的线程块大小。
+
+\textbf{策略 1：线程块覆盖输出分块。} 用 $T^2$ 个线程生成 $T^2$ 个输出，但需要准备 $S^2$ 个输入。因此部分线程要通过多次加载搬入光环元素。所有线程在计算阶段都可以承担输出，加载阶段则需要额外的索引安排。
+
+\textbf{策略 2：线程块覆盖输入分块。} 用 $S^2$ 个线程分别写入共享内存中的一个位置，再由其中的 $T^2$ 个线程计算输出。加载工作统一，计算阶段则有一部分线程不再执行乘加循环。这是后续二维内核的主要组织方式。
+
+\textbf{策略 3：共享内存只保存核心区。} 用 $T^2$ 个线程加载与输出分块同样大小的核心输入区域。计算邻域落在核心区内时读取共享内存；落在光环区时读取全局内存。因此乘加循环内部需要判断数据位置，且光环仍可能产生重复的全局读取。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.96\textwidth]{three_strategies.png}
+\caption{三种策略的加载范围与线程分工。策略 1 分多步装入完整输入，策略 2 为完整输入分配线程，策略 3 仅将核心区置于共享内存。}
+\label{l9:fig:strategies}
+\end{figure}
+
+策略 2 的取舍是把更整齐的工作分配用于高延迟的输入加载，并把线程参与程度的差异留给乘加计算。它避免为了补光环而单独组织很窄的一段访问。这里“加载一致”针对块内各线程的职责；靠近整幅图像边界时，有效输入与补零位置仍需分别处理。
+
+\subsection{课程事项}
+\begin{table}[htbp]
+\centering\small
+\caption{2026年9月22日公布的课程安排}
+\begin{tabularx}{\textwidth}{@{}p{0.18\textwidth}Y@{}}\toprule
+事项 & 安排\\\midrule
+实验与项目 & Lab 3 于当周星期五截止；项目里程碑 1 于当周发布。CNN 为个人项目，GPT-2 为 3--4 人团队项目。\\
+第一次期中考试 & 10月6日 19:00--22:00，纸笔考试；范围为 Lectures 1--11 和 Labs 1--4。具体教室由 Canvas 公布。\\
+考试时间冲突 & 有有效时间冲突者，须在 9月30日前发邮件联系教师，另行安排考试时间。\\
+复习与阅读 & 复习资料已在 Canvas 发布；阅读教材第 7 章，并提交 Lab 3。\\\bottomrule
+\end{tabularx}
+\end{table}
+\FloatBarrier

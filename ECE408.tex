@@ -22,6 +22,10 @@
   \begingroup
     \LectureCompatibility{#1}%
     \graphicspath{{Lecture#1/assets/}{Lecture#1/}}%
+    % 第 10 讲的目录条目作为一组保留，避免仅末两节落到下一页。
+    \ifnum#1=10\relax
+      \addtocontents{toc}{\protect\needspace{12\baselineskip}}%
+    \fi
     \chapter{\LectureTitle{#1}}%
     \label{lecture:#1}%
     \import{Lecture#1/}{content.tex}%

@@ -1,0 +1,155 @@
+\section{数据复用与全局访存计数}
+\label{l9:sec:reuse}
+
+\subsection{复用因子的计数口径}
+相邻输出反复使用同一个输入元素。直接实现每次需要它时都从全局内存读取；完整分块实现先把它读入共享内存，再为多个输出提供数据。设直接实现对输入数组的读取次数为 $A$，分块后为准备这些输出而需要加载的不同有效输入数为 $B$，定义
+\begin{equation}
+ R=\frac{A}{B}.
+ \label{l9:eq:reuse-definition}
+\end{equation}
+$R$ 是输入全局读取量的缩减倍数，也是一次输入加载平均支持的有效使用次数。若 $R=4$，分块后的这部分全局读取量是原来的四分之一。权重读取、输出写回以及访问被硬件合并或缓存后的物理事务量，不包含在这一计数口径中。
+
+分块几何给出的是可利用的复用量。对于把完整输入分块逐元素装入共享内存的策略 1 和策略 2，$B$ 可以直接取有效输入元素数；对于只保存核心区的策略 3，还要计入计算期间发生的光环全局读取。因而同一个几何复用公式，不能直接作为三种实现实际全局流量都相等的依据。
+
+\subsection{一维内部块：按输出与按输入两种计数}
+\subsubsection{从输出需要多少输入开始}
+取 $T=8,m=5$，一个内部输出块为 $P[8]$ 到 $P[15]$。$P[8]$ 需要 $N[6]$ 到 $N[10]$，$P[9]$ 需要 $N[7]$ 到 $N[11]$，依次移动后，$P[15]$ 需要 $N[13]$ 到 $N[17]$。全部输出总共使用 $8\times5=40$ 个输入值，但不同的输入元素只有 $N[6]$ 到 $N[17]$ 这 12 个。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.84\textwidth]{reuse_1d_tile.png}
+\caption{8 个连续输出对应 12 个不同输入。左右各两个光环元素保证最外侧输出也能获得完整的五点窗口。}
+\label{l9:fig:reuse1d}
+\end{figure}
+
+因此，40 次直接全局读取可由 12 次输入加载加共享内存读取完成，$R=40/12=10/3\approx3.3$。若每个输入为 4 字节，这部分全局读入数据由 160 字节降至 48 字节。对于一般的内部块，输出共有 $T$ 个，每个需要 $m$ 个输入，不同输入数为 $T+m-1$，于是
+\begin{equation}
+ R_{1\mathrm D}(T,m)=\frac{Tm}{T+m-1}.
+ \label{l9:eq:reuse1d}
+\end{equation}
+只要块完全位于输入内部，该比值由 $T$ 和 $m$ 决定，与整条输入数组的总长度无关。
+
+\subsubsection{从每个输入被使用几次开始}
+同一例子也可以按输入计数。$N[6]$ 仅供 $P[8]$ 使用，$N[7]$ 供两个输出使用，靠近中间的输入被五个输出使用，另一侧再逐渐减少。按 $N[6]$ 到 $N[17]$ 的顺序，使用次数为
+\[
+ 1,\ 2,\ 3,\ 4,\ 5,\ 5,\ 5,\ 5,\ 4,\ 3,\ 2,\ 1.
+\]
+这些次数之和仍为 40。光环附近的低复用输入拉低了平均值，所以有限分块的平均复用小于单个中央输入能达到的五次使用。
+
+当 $T\ge m$ 时，两侧各形成一个从 1 到 $m-1$ 的阶梯，中间有 $T-m+1$ 个输入各使用 $m$ 次。由此得到
+\begin{equation}
+ \begin{aligned}
+ A&=2\sum_{k=1}^{m-1}k+m(T-m+1)\\
+  &=m(m-1)+m(T-m+1)=Tm.
+ \end{aligned}
+ \label{l9:eq:reuse-multiplicity}
+\end{equation}
+这是对式\eqref{l9:eq:reuse1d}分子的另一种验证。阶梯加平台的这个具体展开采用 $T\ge m$；即使 $T<m$，按输出计数所得的 $A=Tm$ 仍然成立。
+
+\begin{table}[htbp]
+\centering\small
+\caption{一维内部块的输入读取缩减倍数}
+\label{l9:tab:reuse1d}
+\begin{tabular}{@{}lrrrrr@{}}\toprule
+输出边长 $T$ & 16 & 32 & 64 & 128 & 256\\\midrule
+$m=5$ & 4.0 & 4.4 & 4.7 & 4.9 & 4.9\\
+$m=9$ & 6.0 & 7.2 & 8.0 & 8.5 & 8.7\\\bottomrule
+\end{tabular}
+\end{table}
+
+将分母写成 $T[1+(m-1)/T]$，可看出 $R_{1\mathrm D}=m/[1+(m-1)/T]$。固定 $m$ 并增大 $T$，光环相对于核心区的开销下降，复用逐渐接近 $m$；继续扩大分块的收益也随之减小。
+
+\subsection{一维边界块：虚拟元素不产生全局读取}
+考虑最左侧输出块 $P[0]$ 到 $P[7]$，仍取 $m=5,r=2$，并假定右侧有足够多的有效输入。共享内存的 12 个位置对应输入坐标 $-2$ 到 $9$；前两个位置写入零，实际从全局内存读取的只有 $N[0]$ 到 $N[9]$，共 10 个元素。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.78\textwidth]{boundary_1d.png}
+\caption{左边界输入分块中的两个虚拟位置。它们占用共享内存位置，但不需要从输入数组加载。}
+\label{l9:fig:boundary1d}
+\end{figure}
+
+\Needspace{7\baselineskip}
+直接实现计算 $P[0]$ 时只需读取三个有效输入，计算 $P[1]$ 时读取四个，其余六个输出各读取五个。分子和分母都应只计有效的全局读取，因此
+\begin{equation}
+ A=3+4+6\times5=37,\qquad B=8+2=10,
+ \qquad R_{1\mathrm D,edge}=\frac{37}{10}=3.7.
+ \label{l9:eq:boundary1d-example}
+\end{equation}
+若乘加循环仍按五个位置执行，分块内核仍可读取 40 次共享内存，只是其中三次读取的是已补入的零。这与“直接实现有 37 次有效全局读取”采用不同的计数对象。
+
+为便于推广，对一侧接触边界、另一侧不接触边界的完整输出块进行形式化计数。设 $T\ge r$ 且输入至少含有 $T+r$ 个元素，最靠边的 $r$ 个输出分别缺少 $r,r-1,\ldots,1$ 个有效输入，故
+\begin{equation}
+ R_{1\mathrm D,edge}
+ =\frac{Tm-r(r+1)/2}{T+r}.
+ \label{l9:eq:boundary1d-general}
+\end{equation}
+边界例子的比值高于内部例子的 $40/12$，原因是低复用的最外侧输入变成了零，既减少直接读取，也减少分块加载。由此得到的是计数比例变化；实际执行还包含补零、边界分支等开销。
+
+\subsection{二维内部块：两个方向的复用相乘}
+二维输出块有 $T^2$ 个输出，每个输出使用 $m^2$ 个输入，直接实现需要 $T^2m^2$ 次输入读取。不同输入组成边长为 $T+m-1$ 的完整方形区域，只需加载 $(T+m-1)^2$ 个元素。因此
+\begin{equation}
+ R_{2\mathrm D}(T,m)
+ =\frac{T^2m^2}{(T+m-1)^2}
+ =\left(\frac{Tm}{T+m-1}\right)^2.
+ \label{l9:eq:reuse2d}
+\end{equation}
+这个平方来自行、列两个方向的几何计数；权重仍可以是任意的稠密 $m\times m$ 矩阵。
+
+当 $T=8,m=5$ 时，输入分块为 $12\times12$，只需加载 144 个输入；64 个输出共使用 $64\times25=1600$ 个输入值。于是 $R=1600/144\approx11.1$，对应的输入全局读入字节数由 6400 降至 576。这里输出分块大小是 $8\times8$，输入分块大小是 $12\times12$，二者在分子与分母中承担不同角色。
+
+\begin{table}[htbp]
+\centering\small
+\caption{二维内部块的输入读取缩减倍数}
+\label{l9:tab:reuse2d}
+\begin{tabular}{@{}lrrrr@{}}\toprule
+输出分块 & $8\times8$ & $16\times16$ & $32\times32$ & $64\times64$\\\midrule
+$m=5$ & 11.1 & 16.0 & 19.7 & 22.1\\
+$m=9$ & 20.3 & 36.0 & 51.8 & 64.0\\\bottomrule
+\end{tabular}
+\end{table}
+
+固定 $m$ 时，$R_{2\mathrm D}$ 随 $T$ 增大而趋近 $m^2$。较大的权重窗口提供更大的潜在复用，但也扩大光环和计算量。表中的分块大小用于几何分析；能否按“一线程加载一个输入”的策略 2 直接启动，还要检查 $(T+m-1)^2$ 个线程是否满足设备限制。
+
+\subsection{二维边界的乘积计数}
+\label{l9:subsec:boundary-product}
+二维边界也可先分别统计行、列方向，再相乘。假设一个完整输出块仅在某一侧接触图像边界，且相反侧仍有足够多的输入。边界方向的直接读取计数为 $Tm-r(r+1)/2$，不同输入数为 $T+r$；内部方向则分别为 $Tm$ 和 $T+2r$。所以
+\begin{equation}
+ \begin{aligned}
+ R_{2\mathrm D,edge}&=R_{1\mathrm D,edge}\,R_{1\mathrm D},\\
+ R_{2\mathrm D,corner}&=R_{1\mathrm D,edge}^{\,2}.
+ \end{aligned}
+ \label{l9:eq:boundary2d-product}
+\end{equation}
+角块的两个方向都靠边，边块只有一个方向靠边。以 $T=8,m=5$ 为例，三个位置的计数如下。
+
+\begin{table}[htbp]
+\centering\small
+\caption{同一分块大小在内部、单边与角落处的计数差异}
+\label{l9:tab:boundary2d}
+\begin{tabular}{@{}lrrr@{}}\toprule
+位置 & 直接读取 $A$ & 不同有效输入 $B$ & 缩减倍数 $R$\\\midrule
+内部块 & $40^2=1600$ & $12^2=144$ & $11.11$\\
+单边块 & $37\times40=1480$ & $10\times12=120$ & $12.33$\\
+角块 & $37^2=1369$ & $10^2=100$ & $13.69$\\\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{非整块与较小图像的统一写法}
+当最后一块只有部分有效输出，或图像小到一个分块同时接触两侧边界时，可以直接从有效区间计数。对长度为 $D$ 的一维数组，位置 $q$ 所需的有效邻域长度为
+\begin{equation}
+ \ell_D(q)=\min(D-1,q+r)-\max(0,q-r)+1,
+ \quad 0\le q<D.
+ \label{l9:eq:valid-neighborhood}
+\end{equation}
+有效输出区间为 $[a,b]$ 时，其输入并集长度是 $U_D(a,b)=\min(D-1,b+r)-\max(0,a-r)+1$。设二维块的有效输出行区间为 $[y_0,y_1]$，列区间为 $[x_0,x_1]$，则
+\begin{equation}
+ \begin{aligned}
+ A&=\left(\sum_{y=y_0}^{y_1}\ell_H(y)\right)
+     \left(\sum_{x=x_0}^{x_1}\ell_W(x)\right),\\
+ B&=U_H(y_0,y_1)\,U_W(x_0,x_1).
+ \end{aligned}
+ \label{l9:eq:boundary-general}
+\end{equation}
+这是把每个输出的有效输入数 $\ell_H(y)\ell_W(x)$ 对行列求和后分离所得的计数恒等式。它还说明，应先确定有效输出集合，再统计所需输入；若内核为越界候选输出仍执行乘加，这部分无效算术需要另外记录。
+\FloatBarrier

@@ -1,0 +1,84 @@
+\section{从感知机到多层网络}
+\subsection{分类函数与单个感知机}
+
+分类（classification）把输入向量对应到某个离散类别。设输入 $x\in\mathbb{R}^N$，类别数为 $C$，未知的目标关系可以写成 $F:\mathbb{R}^N\to\{1,\ldots,C\}$。模型使用可调参数 $\Theta$，构造近似这一关系的函数。对于后面的数字识别，类别索引使用 $0,\ldots,9$；这只是类别编号的变化。
+
+一个感知机（perceptron）先计算输入的加权和，再通过符号函数给出二分类结果。设权重 $w\in\mathbb{R}^N$、偏置 $b\in\mathbb{R}$，则
+\begin{equation}
+ u=w^{\mathsf T}x+b=\sum_{j=0}^{N-1}w_jx_j+b,
+ \qquad \widehat y=\operatorname{sign}(u).
+ \label{l10:eq:perceptron}
+\end{equation}
+其中 $\Theta=\{w,b\}$；$w_j$ 决定输入第 $j$ 个分量对加权和的贡献，$b$ 决定阈值的平移。这里的中间量 $u$ 与最终的类别输出 $\widehat y$ 分开记号，便于区分点积和分类判断。
+
+当 $u>0$ 时取 $+1$，$u<0$ 时取 $-1$。决策边界是 $w^{\mathsf T}x+b=0$：在二维输入空间中是一条直线，在更高维中是一个超平面。本节的布尔例子使用 0、1 作为输入，用 $-1$、$+1$ 编码假、真；所选偏置保证样本不会恰好落在 $u=0$ 上。
+
+\subsection{异或问题与隐藏表示}
+
+\subsubsection{单条线性边界为什么无法表达异或}
+异或（XOR）在两个输入不同时为真，相同时为假。因此，$(0,1)$ 与 $(1,0)$ 属于正类，$(0,0)$ 与 $(1,1)$ 属于负类。四个点的几何位置使同类点位于正方形的对角线上，单条直线无法完成所需分离。
+
+假设四个点均被严格正确分类，则权重与偏置必须同时满足下列条件。
+\begin{align}
+ b&<0,& w_0+w_1+b&<0,\\
+ w_0+b&>0,&w_1+b&>0.
+\end{align}
+后两式相加得到 $w_0+w_1+2b>0$；而前两式相加得到同一表达式小于 0。两者矛盾。因此，式~\eqref{l10:eq:perceptron} 这种单个感知机不能完成该异或分类。
+
+\subsubsection{用 AND 与 OR 构造中间特征}
+AND 与 OR 分别可以由一个感知机实现。取如下权重与偏置：
+\begin{align}
+ h_{\mathrm{OR}}&=\operatorname{sign}(x_0+x_1-0.5),\\
+ h_{\mathrm{AND}}&=\operatorname{sign}(x_0+x_1-1.5).
+ \label{l10:eq:xor-hidden}
+\end{align}
+两个感知机具有相同的输入权重 $(1,1)$，但使用不同偏置，因此具有不同判断阈值。原来的二维输入被转换成新坐标 $(h_{\mathrm{AND}},h_{\mathrm{OR}})$：$(0,0)$ 变为 $(-1,-1)$，两个“恰好一个输入为 1”的点都变为 $(-1,+1)$，$(1,1)$ 变为 $(+1,+1)$。
+
+这时，异或为真的样本已经集中到同一个表示位置。组合 $(+1,-1)$ 不可能出现，因为 AND 为真必然意味着 OR 为真。接下来的一个感知机只需要在这三个有效位置上完成分类。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.94\linewidth]{xor_network.png}
+\caption{OR 与 AND 感知机构成隐藏层，再由带权组合和符号函数给出 XOR 输出。乘号旁的数值是连接权重，加法器旁的常数是偏置。}
+\label{l10:fig:xor-network}
+\end{figure}
+
+输出层取
+\begin{equation}
+ \widehat y_{\mathrm{XOR}}
+ =\operatorname{sign}\!\left(2h_{\mathrm{OR}}-h_{\mathrm{AND}}-2\right).
+ \label{l10:eq:xor-output}
+\end{equation}
+表~\ref{l10:tab:xor} 逐项核算这一表达式。对于只有一个输入为 1 的情形，输出层的加权和为 $2\times1-(-1)-2=1$，所以得到正类；其余两个情形分别得到 $-3$ 和 $-1$，所以得到负类。
+
+\begin{table}[H]
+\centering
+\caption{两层感知机的完整 XOR 计算。}
+\label{l10:tab:xor}
+\begin{tabular}{cccccc}
+\toprule
+$x_0$&$x_1$&$h_{\mathrm{AND}}$&$h_{\mathrm{OR}}$&$2h_{\mathrm{OR}}-h_{\mathrm{AND}}-2$&输出\\
+\midrule
+0&0&$-1$&$-1$&$-3$&$-1$\\
+0&1&$-1$&$+1$&$+1$&$+1$\\
+1&0&$-1$&$+1$&$+1$&$+1$\\
+1&1&$+1$&$+1$&$-1$&$-1$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{非线性变换如何改变下一层的问题}
+隐藏层的符号函数把输入变为新的特征位置。下一层的直线边界是在这个新表示空间中起作用，映射回原始输入后就能够实现单个感知机无法表达的分类关系。这里体现的是表示变化与分类边界之间的配合。
+
+若两层之间没有激活函数，两次仿射变换可以合并。
+设 $h=W_1x+b_1$，输出加权和为 $W_2h+b_2$，则
+\begin{equation}
+ W_2(W_1x+b_1)+b_2
+ =(W_2W_1)x+(W_2b_1+b_2).
+ \label{l10:eq:affine-collapse}
+\end{equation}
+合并后的表达式仍只有一次仿射变换；若最终再接一个符号函数，仍然只产生一条线性决策边界。多层结构能够形成新表示，关键在于层间插入了合适的非线性函数。
+
+\begin{keybox}[title={XOR 例子的三个组成部分}]
+第一层的权重与偏置定义 OR、AND 两个判断；隐藏层的符号函数生成新表示；输出层对这个表示加权、加偏置并再次判断。偏置与最终的符号函数共同构成式~\eqref{l10:eq:xor-output} 的输出层。若仅用 $a h_{\mathrm{OR}}+b h_{\mathrm{AND}}$，不加偏置，则输入 $00$ 与 $11$ 对应的组合值互为相反数，无法同时得到 XOR 所需的负类输出。
+\end{keybox}
