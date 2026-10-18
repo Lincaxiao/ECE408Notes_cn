@@ -1,0 +1,49 @@
+\section{直接卷积的并行实现与数据复用}
+\label{l11:sec:direct}
+
+\subsection{张量地址与顺序参考实现}
+\label{l11:subsec:layout}
+
+数学上的四维下标需要转换为实际内存地址。假设数组连续存储，最右侧的宽度索引变化最快，其次为高度、通道和批次，这就是这里采用的行主序（row-major order）布局。输入中的一个通道占 $HW$ 个元素，一幅图像占 $CHW$ 个元素，因此输入元素 $X_{b,c,i,j}$ 的线性偏移为 $bCHW+cHW+iW+j$。权重和输出使用同样的逐维展开规则：
+\begin{equation}
+\begin{aligned}
+  \operatorname{off}_X(b,c,i,j)&=((bC+c)H+i)W+j,\\
+  \operatorname{off}_F(m,c,p,q)&=((mC+c)K+p)K+q,\\
+  \operatorname{off}_Y(b,m,h,w)&=((bM+m)H_{\mathrm{o}}+h)W_{\mathrm{o}}+w.
+\end{aligned}
+\label{l11:eq:offsets}
+\end{equation}
+例如，输入宽度为 $W$ 时，同一行中相邻像素的地址相差 $1$，同一列中相邻两行的地址相差 $W$。这既是正确索引的依据，也决定相邻线程的访存是否连续。
+
+对于类型为 \code{float*} 的指针，\code{X[b,c,h,w]} 在 C++ 中包含逗号表达式，不能实现四维数组访问。代码需要使用真正的线性偏移。下面的辅助函数把四个索引映射到一个偏移，后三个参数依次给出后三维的长度。先把第一个索引转换为 \code{std::size_t}，可使后续的地址乘法使用适合数组大小的无符号整数类型。
+
+\noindent\begin{minipage}{\linewidth}
+\lstinputlisting[caption={四维数组的行主序地址计算},label={l11:lst:offset}]{code/tensor_index.h}
+\end{minipage}
+
+辅助函数在普通 C++ 中是主机函数，在 CUDA 编译中同时提供主机端和设备端版本。其调用约定完全相同：例如 \code{off4(b,c,i,j,C,H,W)} 返回输入偏移，而 \code{off4(m,c,p,q,C,K,K)} 返回权重偏移。
+
+顺序卷积直接对应式\eqref{l11:eq:convolution}：外层四个循环枚举输出，内层三个循环完成一个输出的求和。以下函数假设 $B,M,C,K$ 均为正数，$H,W\ge K$，三个数组已按式\eqref{l11:eq:shapes}分配，且输出数组不与输入或权重数组重叠。它只执行卷积，不在其中混入偏置或激活。
+
+\noindent\begin{minipage}{\linewidth}
+\lstinputlisting[caption={逐输出累加的顺序卷积},label={l11:lst:conv_cpu}]{code/conv_cpu.cpp}
+\end{minipage}
+
+每次进入新的 $(b,m,h,w)$ 时创建并清零一个累加变量；全部输入通道和核位置处理完之后，写回一次输出。这个变量的生命周期明确了计算的归约边界：同一个输出的所有乘积必须合并在一起。连续处理不同输出时，重复读取的输入和权重来自运算自身的数据共享关系。
+
+平均池化的顺序实现把每个输出窗口的起点改为 $(Nx,Ny)$，求和后除以窗口面积。其输入参数 \code{Hout} 和 \code{Wout} 表示前一卷积层的输出尺寸，\code{Hs} 和 \code{Ws} 才是当前池化结果的尺寸。假设 $N>0$ 且至少存在一个完整池化窗口，整数除法直接给出前述向下取整。
+
+\noindent\begin{minipage}{\linewidth}
+\lstinputlisting[caption={平均池化、通道偏置与 S 形激活},label={l11:lst:pool_cpu}]{code/pool_cpu.cpp}
+\end{minipage}
+
+激活函数使用了与 $1/(1+\exp(-z))$ 等价的分支形式。$z\ge0$ 时计算 $1/(1+\exp(-z))$，$z<0$ 时计算 $\exp(z)/(1+\exp(z))$；两种分支中指数的自变量都不大于 $0$，从而避免为一个最终接近 $0$ 的激活值先计算很大的正指数。
+
+\subsection{输出并行与归约维度}
+\label{l11:subsec:parallel_axes}
+
+卷积中的并行性可以直接从输出下标和求和下标区分。批次索引 $b$、输出通道索引 $m$、输出坐标 $h,w$ 共同确定一个唯一的输出地址。不同四元组之间没有结果依赖，因此可以并行执行。只要每个四元组分配给唯一线程，各线程就能独立读输入、读权重并写自己的输出。
+
+输入通道 $c$ 和核内坐标 $p,q$ 则属于同一个输出的归约维度（reduction dimension）。它们对应许多需要相加的部分乘积。基础方案让一个线程顺序完成全部 $CK^2$ 项，因而不需要原子操作；如果把这些求和项分给不同线程，就需要归约或原子累加来合并部分结果，并处理累加初值与最终写回的时序。
+
+这一区分也解释了为什么只把不同输出通道交给不同线程可能并行度不足：$M$ 有时只有几个，而全部输出位置数为 $BMH_{\mathrm{o}}W_{\mathrm{o}}$。利用空间位置和批次中的独立图像，可以同时暴露更多任务。较深层的特征图可能更小，但通道数和单个输出的累加长度可能更大；线程粒度与共享数据的组织因此需要结合具体形状选择。

@@ -1,0 +1,176 @@
+\section{线程束内通信与两阶段归约}
+\label{l15:sec:warp}
+
+\subsection{线程束内的寄存器交换}
+
+共享内存归约到后几层时，真正执行加法的线程已经集中到第一个线程束。此时，所需通信范围只有同一线程束内的线程，可以使用线程束交换（warp shuffle）直接传递寄存器中的数值。与先写共享内存、同步、再读取相比，这种方式减少了中间存储访问，也使协调范围缩小到参与交换的线程束。
+
+记线程在束内的通道编号（lane ID）为 $\ell=t\bmod32$，其寄存器值为 $v_\ell$。交换指令让线程获得另一个通道在相应调用中提供的值，而不用把数值先写到共享数组。表\ref{l15:tab:shuffle} 按宽度为 $32$ 的一个线程束给出四种常用寻址方式，$d$ 为偏移或异或掩码，$k$ 为指定的源通道，取 $0\leq k<32$。
+
+\begin{table}[htbp]
+\centering
+\caption{线程束交换原语的寻址关系}
+\label{l15:tab:shuffle}
+\begin{tabularx}{\linewidth}{@{}p{4.15cm}p{2.55cm}Y@{}}
+\toprule
+原语 & 源通道 & 作用\\
+\midrule
+\mbox{\code{__shfl_sync}} & $k$ & 从指定通道取值，可用于广播\\
+\mbox{\code{__shfl_up_sync}} & $\ell-d$ & 从编号更小的通道取值\\
+\mbox{\code{__shfl_down_sync}} & $\ell+d$ & 从编号更大的通道取值，适合向第 $0$ 通道汇合\\
+\mbox{\code{__shfl_xor_sync}} & $\ell\mathbin{\mathrm{xor}}d$ & 按编号的按位异或关系交换\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+在向上或向下交换时，源编号越过当前宽度的边界会返回调用线程自身提供的值，编号不会环绕。交换宽度可以设为不超过 $32$ 的二的幂，用于把线程束划分为连续的小组；后面的正式代码统一采用默认宽度 $32$。
+
+交换调用的参与掩码（mask）描述\emph{当前线程束}中哪些通道参与协调。\mbox{\code{0xffffffffu}} 的 $32$ 位全为 $1$，对应完整线程束。下面统一要求一个线程束内 $32$ 个线程都执行相同位置的交换调用，并使用相同掩码；被读取的源通道也必须实际参与相应调用。掩码不会把不存在的输入变成 $0$，也不会把稀疏的通道重新排成连续编号。因此，尾部输入的补零在交换之前完成。
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={完整线程束内求和：仅第0通道的返回值用于输出},label={l15:lst:code6}]
+__device__ __forceinline__ float warp_sum(float value) {
+    for (int offset = 16; offset > 0; offset /= 2) {
+        value += __shfl_down_sync(0xffffffffu,
+                                  value, offset);
+    }
+    return value;
+}
+\end{lstlisting}
+\end{minipage}
+
+这个函数依次使用偏移 $16,8,4,2,1$，共五轮交换和加法。第一次使低编号的前 $16$ 个通道各合并两个值，第二次使前 $8$ 个通道各覆盖四个原始值，依此类推，最终第 $0$ 通道覆盖全部 $32$ 个输入。所有通道都执行代码，函数只保证第 $0$ 通道的返回值是整束总和；其他通道的值不能统一当作完整和或一般后缀和使用。
+
+用一个完整的八通道子组可以手算同样的递减偏移规则。令初值依次为 $4,7,2,3,8,5,9,6$，子组宽度设为 $8$，偏移依次为 $4,2,1$。表\ref{l15:tab:shuffle-example} 只列出仍会沿归约树进入第 $0$ 通道最终结果的部分和，所有子组成员仍参与每轮交换。
+
+\begin{table}[htbp]
+\centering
+\caption{八通道子组的交换归约手算}
+\label{l15:tab:shuffle-example}
+\begin{tabularx}{\linewidth}{@{}lYp{4.5cm}@{}}
+\toprule
+阶段 & 与最终结果相关的部分和 & 第 $0$ 通道的值\\
+\midrule
+初始化 & $4,7,2,3,8,5,9,6$ & $4$\\
+偏移 $4$ & $12,12,11,9$ & $4+8=12$\\
+偏移 $2$ & $23,21$ & $(4+8)+(2+9)=23$\\
+偏移 $1$ & $44$ & $23+21=44$\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+同一轮交换读取的是其他通道为该次调用提供的寄存器值，随后各线程更新自己的局部变量。程序因此无需用共享内存模拟这些寄存器交换。交换调用本身不提供共享内存或全局内存访问的排序保证；跨线程束传递共享数组中的结果时，仍须使用相应的块级同步。
+
+\subsection{用线程束交换完成归约树的末段}
+
+一种渐进优化是保留共享内存树的前半部分，等到只剩较少的部分和时，再由第一个线程束完成归约。以下取 $B\geq64$ 且 $B$ 为二的幂，沿用上一节共享内存核函数的输入加载、共享数组 \mbox{\code{values}} 及其后的第一道屏障，把归约循环和输出部分替换为下面的代码。
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={共享内存树结束后，把最后64个部分和交给一个线程束},label={l15:lst:code7}]
+for (unsigned int s = B / 2; s > 32; s /= 2) {
+    if (t < s) values[t] += values[t + s];
+    __syncthreads();
+}
+
+if (t < 32) {
+    float value = values[t] + values[t + 32];
+    value = warp_sum(value);
+    if (t == 0) partial[blockIdx.x] = value;
+}
+\end{lstlisting}
+\end{minipage}
+
+循环条件 $s>32$ 的含义是，最后一次共享内存层使用 $s=64$，将 $128$ 个部分和压缩为 $64$ 个；对于 $B=64$，初始加载后已经只有 $64$ 个部分和，循环可以直接跳过。随后前 $32$ 个线程先执行 \mbox{\code{values[t] + values[t+32]}}，完成必要的 $64\to32$ 合并，再用五轮交换完成 $32\to1$。若直接只读取前 $32$ 项而省略这次加法，就会漏掉另外 $32$ 个部分和。
+
+当 $B=256$ 时，初始加载先将 $512$ 个输入变为 $256$ 个共享值，随后共享内存层按 $s=128,64$ 运行两次；前 $32$ 个线程接收最后 $64$ 个部分和。块屏障数由直接共享树的 $1+\log_2 256=9$ 次降到 $3$ 次：一次初始加载屏障，以及两次共享树层末屏障。
+
+分支 \mbox{\code{if (t < 32)}} 只选择完整的第一个线程束，其他线程束不调用 \mbox{\code{warp_sum}}。这符合完整掩码的约定，因为掩码的范围是各自的线程束。需要严格保留的是所选线程束的全部 $32$ 个参与线程，以及读取共享数组前已经完成的块屏障。当前片段还依赖 \mbox{\code{values[t+32]}} 有效，因此不能直接用于仅 $32$ 个线程的块；这种配置可在初始加载后直接对各线程自己的值做一次线程束归约。
+
+\subsection{显式线程组与协作组}
+
+协作组（Cooperative Groups）接口把参与某次协作的线程集合表示为一个组对象。组可以对应整个网格、线程块簇、一个线程块，以及由线程块划分出的多线程束、单线程束或更小的线程组。这里使用由连续 $32$ 个线程组成的分块组，使组内交换的参与范围直接体现在函数参数中。
+
+使用协作组时，需要包含对应头文件，并由线程块成员共同取得块句柄和创建分组。下面的分组语句放在核函数中、任何只允许部分线程进入的分支之前；实际块大小取 $32$ 的倍数。
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={在核函数内由整个线程块共同建立32线程分组},label={l15:lst:code8}]
+// File scope:
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
+
+// Inside the kernel, reached by every block thread:
+cg::thread_block block = cg::this_thread_block();
+cg::thread_block_tile<32> tile =
+    cg::tiled_partition<32>(block);
+\end{lstlisting}
+\end{minipage}
+
+这里每个线程得到的 \mbox{\code{tile}} 表示自己所属的 $32$ 线程组。\mbox{\code{tile.thread_rank()}} 给出该线程在组内的编号，\mbox{\code{tile.size()}} 返回组大小，\mbox{\code{tile.shfl_down(value, offset)}} 则对应在组内向较大编号通道取值。原先的完整线程束辅助函数可以写成下面的形式。
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={把参与交换的线程组显式传入归约函数},label={l15:lst:code9}]
+__device__ __forceinline__
+float warp_sum_group(const cg::thread_block_tile<32>& tile,
+                     float value) {
+    for (int offset = tile.size() / 2;
+         offset > 0; offset /= 2) {
+        value += tile.shfl_down(value, offset);
+    }
+    return value;
+}
+\end{lstlisting}
+\end{minipage}
+
+分组操作 \mbox{\code{tiled_partition<32>(block)}} 是父组上的集体操作，必须由整个父线程块共同调用。因此，应先完成分组，再把 \mbox{\code{tile}} 传入归约函数。若把整块分组的创建语句放进一个只由第一个线程束调用的函数，就破坏了父组全员参与的条件。对于已经创建的 $32$ 线程子组，后续归约只要求该子组的成员共同参与；其他子组可以执行自己的归约或别的工作。
+
+协作组表达了通信范围，算法仍然需要正确地决定何时使用组内交换、何时进行跨线程束的共享内存同步。网格级或线程块簇级协作还有对应的执行条件；这里的普通块内实现只使用线程块与 $32$ 线程子组。
+
+\subsection{先在各线程束内归约，再合并线程束结果}
+
+只优化最后一个线程束，仍会在共享内存树的前几层执行多次块屏障。两阶段线程束归约可以把更多的计算留在寄存器中：第一阶段，各线程束独立完成自己的局部归约；第二阶段，由第一个线程束归约各束的结果。跨线程束的数据交换只发生在这两个阶段之间。
+
+令每块有 $Q=B/32$ 个线程束，束号为 $q=\lfloor t/32\rfloor$，通道号为 $\ell=t\bmod32$。首先，每个线程在寄存器中形成 $v_t=x_{s_b+t}+x_{s_b+t+B}$。线程束 $q$ 对自己的 $32$ 个 $v_t$ 求和，由其第 $0$ 通道把结果 $u_q$ 写入共享数组。块屏障之后，第一个线程束的前 $Q$ 个通道读入 $u_0,\ldots,u_{Q-1}$，其他通道取 $0$，再完成一次完整线程束归约。
+
+\begin{figure}[htbp]
+\centering
+\input{assets/two-stage-warp.tex}
+\caption{每块四个线程束的两阶段归约。各线程束先独立产生一个结果，只在共享数组交接处需要一次块屏障；第二阶段用零补齐到32个通道。}
+\label{l15:fig:two-stage}
+\end{figure}
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={两阶段线程束归约：一个块屏障与正确的第二阶段补零},label={l15:lst:code10}]
+template<int B>
+__global__ void reduce_two_stage(const float* input,
+                                 size_t n, float* partial) {
+    static_assert(B >= 32 && B <= 1024 && B % 32 == 0,
+                  "B must contain complete warps");
+    constexpr int Q = B / 32;
+    __shared__ float warp_totals[Q];
+    unsigned int t = threadIdx.x;
+    size_t i = size_t(2) * B * blockIdx.x + t;
+
+    float a = (i < n) ? input[i] : 0.0f;
+    float b = (i + B < n) ? input[i + B] : 0.0f;
+    float value = warp_sum(a + b);
+    if (t % 32 == 0) warp_totals[t / 32] = value;
+    __syncthreads();
+
+    if (t < 32) {
+        value = (t < Q) ? warp_totals[t] : 0.0f;
+        value = warp_sum(value);
+        if (t == 0) partial[blockIdx.x] = value;
+    }
+}
+\end{lstlisting}
+\end{minipage}
+
+与前面的核函数一样，实际启动线程数必须等于 $B$，满足设备限制，且输出数组与输入不重叠。这里要求 $B$ 是 $32$ 的倍数，使第一阶段所有线程束完整；再要求 $B\leq1024$，使 $Q\leq32$，全部束结果可以交给一个线程束。由于第二阶段显式补零，$Q$ 不必是二的幂，因此 $B=96$ 这样的三个完整线程束也可以使用这套算法。
+
+第二阶段的边界判断十分关键。例如 $B=128$ 时，共享数组只有 $Q=4$ 项；前 $32$ 个线程如果无条件读取 \mbox{\code{warp_totals[t]}}，线程 $4$ 至 $31$ 就会越界。正确结构是先让四个通道读取真实部分和，其余通道设为 $0$，然后让完整的第一个线程束共同调用 \mbox{\code{warp_sum}}。只让前四个线程进入原有完整掩码函数，同样不能满足该函数约定。
+
+唯一的块屏障保证所有 $u_q$ 已写入共享数组，再由第一个线程束统一读取。最终写出只由线程 $0$ 执行，各块写到自己的输出位置。对 $B=128$，共享数组由直接共享树中的 $128$ 个浮点数减到 $4$ 个，即由 $512$ 字节降到 $16$ 字节；直接共享树的八次块屏障也减为一次。
+
+这套代码中，各线程束都分别经历五轮交换，后面一些通道的运算结果不再进入第 $0$ 通道的最终总和；第二阶段还包含对补零通道的运算。因而，按线程累计的标量加法次数会多于理想树的 $2B-1$ 次必要合并。代码通过减少共享内存访问和块屏障来交换这些额外运算；其工作量仍随输入规模线性增长。这里应区分有效贡献通道减少与控制分歧：上述交换循环由全部通道无条件执行，通道利用率下降并不等同于源代码出现了新的按通道分支。
+
+使用协作组时，核函数开始处先由全块建立子组句柄。每次束内归约均通过辅助函数 \mbox{\code{warp_sum_group}} 执行，将该句柄与当前部分和作为两个实参传入。两阶段之间保留块屏障，第二阶段由完整的第一个子组处理补齐后的束结果。

@@ -1,0 +1,50 @@
+\subsection{展开索引与实际数组实现}
+\label{l11:subsec:unroll_code}
+
+权重张量的线性偏移可以写成 $mD+r$，与 $M\times D$ 行主序矩阵的偏移相同，因此在既定布局下，核矩阵 $A$ 可以直接使用原来的权重数组。输入窗口存在重叠，展开矩阵则需要把每个窗口所需的值放入指定行列。显式存放全部展开矩阵时，数组形状为 $B\times D\times L$，元素 $(U_b)_{r,\ell}$ 的偏移为 $(bD+r)L+\ell$。
+
+顺序展开代码按图像、输入通道和核内偏移确定矩阵行，再让输出位置遍历矩阵列。两个输出位置即使需要相同的原输入元素，也分别写入自己的展开位置。
+
+\noindent\begin{minipage}{\linewidth}
+\lstinputlisting[caption={按批次保存展开矩阵的顺序实现},label={l11:lst:unroll_cpu}]{code/unroll_cpu.cpp}
+\end{minipage}
+
+另一种组织方式是直接枚举展开矩阵的位置，再反求应当读取的原输入。给定 $r$ 和 $\ell$，由于 $r$ 先按通道分成长度为 $K^2$ 的区段，再在每段中按行展开，所以逆映射为
+\begin{equation}
+\begin{aligned}
+  c&=\left\lfloor r/K^2\right\rfloor,&
+  p&=\left\lfloor (r\bmod K^2)/K\right\rfloor,&
+  q&=r\bmod K,\\
+  h&=\left\lfloor \ell/W_{\mathrm{o}}\right\rfloor,&
+  w&=\ell\bmod W_{\mathrm{o}},&
+  (U_b)_{r,\ell}&=X_{b,c,h+p,w+q}.
+\end{aligned}
+\label{l11:eq:unroll_inverse}
+\end{equation}
+例如，$C=3,K=2$ 时，$r=9$ 对应 $(c,p,q)=(2,0,1)$；若 $W_{\mathrm{o}}=2$ 且 $\ell=2$，则 $(h,w)=(1,0)$，因此展开位置 $(9,2)$ 读取第三输入通道中的 $(1,1)$。
+
+设备实现可以使用一维网格，把完整 $B\times D\times L$ 数组的线性位置分给各线程。下面的网格步进循环（grid-stride loop）让每个线程在处理完自己的起始位置后，跨过整个网格的线程总数继续处理。所有合法位置都被恰好一个线程负责，即使数组大于一次启动的线程总数，也能够覆盖全部元素。
+
+\noindent\begin{minipage}{\linewidth}
+\lstinputlisting[breakatwhitespace=true,caption={从展开位置反求输入地址的设备实现},label={l11:lst:unroll_gpu}]{code/unroll_gpu.cu}
+\end{minipage}
+
+该设备函数使用一维线程块和一维网格，块数及每块线程数均应为所用设备支持的正值。循环中的 \code{idx} 就是展开数组的目标偏移：先用余数恢复 $\ell$，再恢复 $r$ 与图像编号 $b$。同一批相邻线程写入连续展开元素；当它们仍位于同一展开行和同一输出空间行时，对原输入的读取也沿宽度方向连续。跨输出行、跨核偏移或跨输入通道时，输入地址会相应跳转。
+
+展开操作的输出位置没有重叠写入，因而不需要原子操作。重复出现在不同窗口中的输入是重复读取的数据，它们进入展开矩阵中的不同地址。这种复制正是显式展开产生额外存储需求的原因。
+
+\subsection{批次组织与输出内存顺序}
+\label{l11:subsec:batch_layout}
+
+逐图计算 $V_b=AU_b$ 时，$U$ 按 $B\times D\times L$ 存储，每个 $V_b$ 写到该图像对应的 $M\times L$ 区域，自然得到 $B\times M\times L$ 的输出顺序。核矩阵 $A$ 在整个批次中共享，不需要为每幅图像复制一份权重。批量矩阵乘法也可以使用相同的数学组织。
+
+也可以把所有图像的展开列连接成 $U_{\mathrm{all}}\in\mathbb{R}^{D\times(BL)}$，再一次计算 $A U_{\mathrm{all}}\in\mathbb{R}^{M\times(BL)}$。具体地，$(U_{\mathrm{all}})_{r,bL+\ell}=(U_b)_{r,\ell}$，其行主序偏移为 $r(BL)+bL+\ell$，与原数组的 $(bD+r)L+\ell$ 不同。因此，拼列需要按新顺序组织输入，不能仅改变原数组的形状解释。
+
+在这种表示中，每个输出通道的一整行包含全部图像的位置，因此矩阵乘积的行主序布局对应 $M\times B\times L$。其地址与原来按批次优先存储的输出地址分别为
+\begin{equation}
+  \operatorname{off}_{\mathrm{concat}}=m(BL)+bL+\ell,
+  \qquad
+  \operatorname{off}_{\mathrm{batch}}=(bM+m)L+\ell.
+  \label{l11:eq:batch_order}
+\end{equation}
+例如，$B=2,M=2,L=4$ 时，图像 $b=1$、输出通道 $m=0$ 的第一个元素，在拼列乘积中的偏移为 $4$，在批次优先输出中的偏移为 $8$。因此，选择拼列计算时，展开数组本身就要采用对应布局，乘积也需要按后续层期望的顺序重排，或让后续计算显式接收这种新布局。矩阵形状相容只保证数学乘法成立，实际数组还必须使用相应的元素顺序。

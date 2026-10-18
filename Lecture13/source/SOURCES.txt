@@ -1,0 +1,50 @@
+Lec13 来源与独立技术核验记录
+
+主材料
+ece408-lecture13-histogram-vk-FL26.pdf，52 页。
+标题：Lecture 13: Atomic Operations and Histogramming。
+原始 PDF 随包保存，讲义不以课件页码作为正文解释的替代。
+
+内容对应
+第 4–20 页：共享读改写、数据竞争、互斥、线程束执行、原子性、CAS 与 CUDA 原子接口。
+第 21–32 页：直方图、输入分配、合并访问、网格跨步基本核函数。
+第 33–40 页：同址串行服务、DRAM/L2/共享内存路径与延迟模型。
+第 41–49 页：私有化、共享内存三阶段算法、容量问题、线程粗化。
+第 51–52 页：5 ns / 120 ns 与 0.2424 GFLOPS 的计算题。
+行政提醒和阅读任务未纳入技术正文。
+
+图片
+正文仅含一个用 TikZ 绘制的精确向量示意图，代码位于 sections/04_privatization.tex。
+图以三块独立统计和逐桶归并表达私有化恒等式；未复用课件中存在累计计数错配的字母动画。
+
+原材料数值与代码的核对
+1. 完整字符串 Programming Massively Parallel Processors 共 41 个字符，忽略三个空格并统一大小写后为 38 个字母。
+   非零频数为 A4,C1,E3,G2,I2,L4,M3,N1,O3,P3,R5,S5,V1,Y1；全部通过程序直接计数。
+2. CAS 抽象的布尔成功接口与 CUDA 返回旧值接口分别说明，实际代码按返回值等于预期值判断成功。
+3. 共享直方图统一命名，清零和合并均采用跨步循环，支持少于 256 个线程的块；全部线程参与两次屏障。
+4. 性能题采用明确的等效串行工作流，给定吞吐经舍入对应约 50% 的 L2 原子操作比例。
+   0.2424 GFLOPS / 100 次浮点操作 = 每秒 2.424×10^6 份线程工作量。
+
+独立外部核验
+核验日期：2026-10-17。以下仅核验 CUDA 接口和执行模型边界，未扩展成额外课程要求。
+
+NVIDIA CUDA Programming Guide, C/C++ Language Extensions, Legacy Atomic Functions / atomicCAS
+https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html#legacy-atomic-functions
+https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html#atomiccas
+核验：atomicAdd 和 atomicCAS 返回旧值；CAS 的比较替换语义；无后缀传统原子接口为设备作用域、宽松内存顺序。
+
+NVIDIA CUDA Programming Guide, CUDA C++ Memory Model, Data Races
+https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cuda-cpp-memory-model.html#data-races
+核验：冲突原子访问的作用域条件；普通访问与并发原子写不自动形成安全同步。
+代码以同值 CAS 取得初始观测值，是据此采用的纯原子读写实现选择。
+
+NVIDIA CUDA Programming Guide, Advanced Kernel Programming, Independent Thread Scheduling
+https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/advanced-kernel-programming.html#independent-thread-scheduling
+NVIDIA CUDA C++ Programming Guide 12.6.3, SIMT Architecture
+https://docs.nvidia.com/cuda/archive/12.6.3/cuda-c-programming-guide/index.html#simt-architecture
+核验：传统线程束共享程序计数器模型的自旋锁进度问题，以及独立线程调度改变的执行前提。
+
+代码文件
+code/histogram.cu 由正文四个完整代码块原样提取，增加 cuda_runtime.h 与 cstddef 头文件。
+它是可供 CUDA 工程包含或用 nvcc -std=c++17 -c histogram.cu 编译的实现单元，不含 main 函数。
+本文档的数值与索引已作独立核对；未在 GPU 上运行代码或提供实测性能结果。

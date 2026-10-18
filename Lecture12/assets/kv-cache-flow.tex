@@ -1,0 +1,25 @@
+\begin{tikzpicture}[
+  font=\small,>=Latex,
+  box/.style={draw=UIUCBlue,line width=0.7pt,rounded corners=1pt,minimum height=0.72cm,align=center},
+  flow/.style={->,line width=0.75pt,draw=UIUCBlue}
+]
+\node[box,minimum width=2.4cm] (q) at (0,1.8) {新查询 $q_N$\\$1\times d$};
+\draw[draw=UIUCBlue,line width=0.7pt,fill=white] (2.5,0.85) rectangle (5.5,3.0);
+\draw[draw=UIUCBlue,line width=0.7pt,fill=UIUCOrange!12] (2.5,0.85) rectangle (5.5,1.55);
+\node[align=center] at (4,2.35) {历史键 $K_{0:N,:}$\\$N\times d$};
+\node at (4,1.2) {新键 $k_N$};
+\draw[draw=UIUCBlue,line width=0.7pt,fill=white] (6.9,0.85) rectangle (9.9,3.0);
+\draw[draw=UIUCBlue,line width=0.7pt,fill=UIUCOrange!12] (6.9,0.85) rectangle (9.9,1.55);
+\node[align=center] at (8.4,2.35) {历史值 $V_{0:N,:}$\\$N\times d$};
+\node at (8.4,1.2) {新值 $v_N$};
+\node[box,minimum width=3.2cm] (score) at (4,-0.4) {$q_N\widehat K^{\mathsf T}/\sqrt d$};
+\node[box,minimum width=3.2cm] (prob) at (4,-1.7) {归一化权重};
+\node[box,minimum width=3.0cm] (agg) at (8.4,-1.7) {加权求和};
+\node[align=center] (out) at (8.4,-2.9) {新输出 $o_N$\\$1\times d$};
+\draw[flow] (q.south)|-(score.west);
+\draw[flow] (4,0.85)--(score.north);
+\draw[flow] (score)--node[right] {$1\times(N+1)$}(prob);
+\draw[flow] (prob)--(agg);
+\draw[flow] (8.4,0.85)--node[right] {$\widehat V$}(agg.north);
+\draw[flow] (agg)--(out);
+\end{tikzpicture}

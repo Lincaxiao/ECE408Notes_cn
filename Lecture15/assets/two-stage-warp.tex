@@ -1,0 +1,21 @@
+\begin{tikzpicture}[x=1cm,y=1cm,>=Stealth,
+  every node/.style={font=\small,align=center},
+  stage/.style={draw=UIUCBlue,fill=SoftBlue,line width=.45pt,
+    minimum width=2.75cm,minimum height=.72cm},
+  total/.style={draw=UIUCBlue,fill=white,line width=.45pt,
+    minimum width=.85cm,minimum height=.55cm}]
+\foreach \q in {0,...,3}{
+  \node at (3.25*\q,.55) {线程束 $\q$};
+  \node[stage] (v\q) at (3.25*\q,-.15) {32个寄存器值};
+  \node[total] (u\q) at (3.25*\q,-1.45) {$u_{\q}$};
+  \draw[->] (v\q)--node[right,font=\footnotesize]{5轮交换}(u\q);}
+\node[stage,minimum width=12.5cm] (shared) at (4.875,-2.7)
+  {共享数组：$u_0\qquad u_1\qquad u_2\qquad u_3$};
+\foreach \q in {0,...,3}{\draw[->] (u\q.south)--(3.25*\q,-2.34);}
+\node[stage,minimum width=8.7cm] (first) at (4.875,-4.15)
+  {第一线程束：$u_0,u_1,u_2,u_3,0,\ldots,0$};
+\draw[->] (shared)--node[right]{一次块屏障后读取}(first);
+\node[total,minimum width=5.1cm] (result) at (4.875,-5.55)
+  {第0通道：整个线程块的和};
+\draw[->] (first)--node[right]{5轮交换}(result);
+\end{tikzpicture}

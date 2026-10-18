@@ -1,0 +1,31 @@
+{
+  "unchanged_listing_bodies": 12,
+  "unchanged_screenshots": 8,
+  "sector_counts": [
+    4,
+    5,
+    8,
+    32
+  ],
+  "bank_conflict_degrees": {
+    "1": 1,
+    "2": 2,
+    "32": 32,
+    "33": 1
+  },
+  "occupancy_32_registers": 1.0,
+  "occupancy_64_registers": 0.6666666666666666,
+  "compute_lower_bound_ms": {
+    "A40": 0.17967914438502672,
+    "L40S": 0.10269890271112878,
+    "B200": 0.14204485404468492
+  },
+  "L40S_ideal_speedup": 33.788092261904765,
+  "tail_slot_utilization": 0.75,
+  "vector_load_reduction": 0.375,
+  "shared_total_instruction_reduction_percent": 35.29333333333333,
+  "reported_benchmark_status": "source measurements, not rerun",
+  "cuda_compile": "not_run",
+  "gpu_execution": "not_run",
+  "gpu_profiling": "not_run"
+}

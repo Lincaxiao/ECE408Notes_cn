@@ -1,0 +1,14 @@
+{
+  "prose_index_cases": 96,
+  "numeric_examples": "passed",
+  "warp_utilization": [
+    0.2951388888888889,
+    0.6640625
+  ],
+  "unchanged_listing_blocks": 11,
+  "implementation_file": "byte-identical to source archive",
+  "cuda_correctness_retesting": "not performed; code unchanged from imported source",
+  "cuda_compile": "not run",
+  "gpu_execution": "not run",
+  "gpu_timing": "not run"
+}

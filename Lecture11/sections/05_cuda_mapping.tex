@@ -1,0 +1,73 @@
+\subsection{空间分块与线程索引}
+\label{l11:subsec:grid_mapping}
+
+令每个线程块计算固定图像、固定输出通道中的一个 $T\times T$ 输出分块。块内配置 $T\times T$ 个线程，线程的横坐标对应输出列，纵坐标对应输出行。对于一张大小为 $H_{\mathrm{o}}\times W_{\mathrm{o}}$ 的特征图，横向分块数为 $n_w=\left\lceil W_{\mathrm{o}}/T\right\rceil$，纵向分块数为 $n_h=\left\lceil H_{\mathrm{o}}/T\right\rceil$。向上取整保证最右侧和最下侧剩余的位置也有对应线程。
+
+将空间分块按行展开，记其编号为 $t$，则 $0\le t<n_hn_w$。分块所在的行、列分别为 $\left\lfloor t/n_w\right\rfloor$ 与 $t\bmod n_w$，所以该块左上角的输出坐标为 $(T\left\lfloor t/n_w\right\rfloor,\,T(t\bmod n_w))$。使用以下网格维度，就能把输出通道、空间分块和图像批次分别放在三个网格轴上：
+\begin{equation}
+\begin{aligned}
+  \text{线程块维度}&=(T,T,1),&
+  \text{网格维度}&=(M,n_hn_w,B),\\
+  m&=\texttt{blockIdx.x},&
+  b&=\texttt{blockIdx.z},\\
+  h&=T\left\lfloor \frac{\texttt{blockIdx.y}}{n_w}\right\rfloor
+      +\texttt{threadIdx.y},\\
+  w&=T(\texttt{blockIdx.y}\bmod n_w)
+      +\texttt{threadIdx.x}.
+\end{aligned}
+\label{l11:eq:grid_mapping}
+\end{equation}
+这里 CUDA 网格的 $x$ 维代表输出通道，图像水平方向的分块数却是 $n_w$。图像的空间方向与网格轴的名称不必相同，关键是恢复坐标时使用一致的对应关系。
+
+例如，$M=4$、$H_{\mathrm{o}}=W_{\mathrm{o}}=8$、$T=4$ 时，每个输出通道需要 $2\times2=4$ 个空间分块，单幅图像的网格大小为 $(4,4,1)$，共有 $16$ 个线程块。空间分块 $t=0,1$ 分别位于上排的左、右两侧，$t=2,3$ 分别位于下排的左、右两侧。固定 $m=2$、$t=3$，再取块内坐标 $\texttt{threadIdx.x}=1$、$\texttt{threadIdx.y}=2$，就得到 $h=6,w=5$，因此该线程负责 $Y_{0,2,6,5}$。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=.55cm,y=.55cm,>=Latex,font=\small]
+  \fill[SoftBlue] (4,-4) rectangle (8,-8);
+  \fill[UIUCOrange!35] (5,-6) rectangle (6,-7);
+  \draw[step=1,black!35,thin] (0,-8) grid (8,0);
+  \draw[UIUCBlue,thick] (0,-8) rectangle (8,0);
+  \draw[UIUCBlue,thick] (4,-8) -- (4,0);
+  \draw[UIUCBlue,thick] (0,-4) -- (8,-4);
+  \node at (2,-2) {$t=0$};
+  \node at (6,-2) {$t=1$};
+  \node at (2,-6) {$t=2$};
+  \node at (6,-4.7) {$t=3$};
+  \node[anchor=south] at (4,1.0) {输出通道 $m=2$};
+  \foreach \i in {0,...,7}{
+    \node[font=\scriptsize] at (\i+.5,.5) {\i};
+    \node[font=\scriptsize] at (-.5,-\i-.5) {\i};
+  }
+  \node[anchor=west,align=left] at (9,-1.0) {每块 $4\times4$ 个输出\\每块 $4\times4$ 个线程};
+  \node[anchor=west,align=left] (pos) at (9,-5.9) {输出坐标 $(h,w)=(6,5)$\\块内坐标 $(t_y,t_x)=(2,1)$};
+  \draw[->] (pos.west) -- (6,-6.5);
+\end{tikzpicture}
+\caption{一张 $8\times8$ 特征图的空间分块。浅蓝区域由分块 $t=3$ 负责，橙色单元由该块中纵坐标为 $2$、横坐标为 $1$ 的线程计算。}
+\label{l11:fig:tile_mapping}
+\end{figure}
+
+\subsection{基础卷积核与边界处理}
+\label{l11:subsec:basic_kernel}
+
+基础设备函数用式\eqref{l11:eq:grid_mapping}替代顺序程序的四个输出循环，其余的 $c,p,q$ 三重累加保持不变。模板参数 $T$ 是编译时确定的分块边长，启动时的线程块必须与它一致；\code{tiles_w} 对应上面的 $n_w$。输入、权重和输出指针都指向设备内存。
+
+\noindent\begin{minipage}{\linewidth}
+\lstinputlisting[firstline=1,lastline=25,caption={每个线程计算一个卷积输出的设备函数},label={l11:lst:conv_gpu}]{code/conv_gpu.cu}
+\end{minipage}
+
+使用向上取整后，一些线程会落在输出范围之外。对于这个没有块内同步的基础核，可以直接让这些线程返回。对剩余线程，有 $h\le H-K$、$p\le K-1$，从而 $h+p\le H-1$；宽度方向同理。这说明，只要输出坐标合法，整个有效卷积窗口中的输入地址就合法，无须在内层循环中再对每个输入元素重复判断。
+
+相应主机函数计算网格并启动设备函数。下面取 $T=16$，每块为 $256$ 个线程。数组应提前分配，且网格维度与数组大小需要位于所用设备和索引类型的支持范围内。
+
+\noindent\begin{minipage}{\linewidth}
+\lstinputlisting[firstline=27,lastline=42,firstnumber=1,caption={包含批次维度与边缘分块的卷积启动函数},label={l11:lst:launch}]{code/conv_gpu.cu}
+\end{minipage}
+
+启动函数返回的是内核启动阶段的错误状态。内核执行通常相对于主机异步进行；主机读取计算结果前，还需要在执行流程中完成相应的同步或阻塞式结果复制。这个时序安排与卷积的数值公式分开处理。
+
+输出尺寸为 $34\times34$、$T=16$ 时，必须启动 $3\times3$ 个空间分块。若直接用整数除法计算 $34/16=2$，就只覆盖前 $32$ 行和前 $32$ 列。向上取整加输出边界检查使同一个核能够同时处理可整除和不可整除的形状。
+
+平均池化也可以沿用同一输出映射，把 $H_{\mathrm{o}},W_{\mathrm{o}}$ 换成 $H_{\mathrm{s}},W_{\mathrm{s}}$，让每个线程负责一个 $S_{b,m,x,y}$，再按式\eqref{l11:eq:pool_sigmoid}访问 $(Nx+p,Ny+q)$。这时改变的是线程内部的输入地址与汇总运算，批次、通道和空间分块的组织方式仍然适用。
+
+基础核中的输入全部从全局内存读取。把输出分给二维线程块，已经解决了并行任务分配；要进一步让同一块中的线程复用输入数据，还需要显式引入共享内存。

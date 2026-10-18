@@ -1,0 +1,76 @@
+{
+  "primary_source": {
+    "file": "ece408-lecture12-intro-to-LLM-vk-FL26.pdf",
+    "title": "Computation in Large Language Models",
+    "pdf_pages": 32,
+    "sha256": "9aa7f22ee22021ab30d100b97ede6bb436a3044823786d4706585dace200197d"
+  },
+  "template": "LECTURE_NOTES_TEMPLATE.md",
+  "external_checks": [
+    {
+      "url": "https://raw.githubusercontent.com/openai/gpt-2/master/src/model.py",
+      "scope": "第1、2、4节：词元与位置嵌入、前置层归一化、最终归一化、GELU、4D前馈宽度、逐层缓存、词表共享权重与无输出偏置"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/openai/gpt-2/master/src/encoder.py",
+      "scope": "第1节：字节层面的BPE、固定词表和合并次序"
+    },
+    {
+      "url": "https://proceedings.neurips.cc/paper_files/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf",
+      "scope": "第2节：多头投影、缩放点积、因果掩码和编码器/解码器依赖"
+    },
+    {
+      "url": "https://arxiv.org/abs/2205.14135",
+      "scope": "第5节：分块融合减少显存读写；稠密注意力的算术阶数仍为二次"
+    }
+  ],
+  "numerical_convention": {
+    "fma_flops": 2,
+    "MiB_bytes": 1048576,
+    "GiB_bytes": 1073741824,
+    "large_projection_example": {
+      "D": 12288,
+      "h": 96,
+      "d": 128,
+      "L": 96,
+      "parameters": 57982058496,
+      "FP16_bytes": 115964116992,
+      "flops_per_new_position": 115964116992
+    },
+    "clarification": "原课件第18页给出约55B投影参数与220Gflop；讲义直接从给定尺寸重算为约58.0e9参数和115.964e9 FLOP。两者统计范围都只涉及注意力投影，讲义明确采用FMA=2 FLOP并区分十进制与二进制容量单位。"
+  },
+  "technical_clarifications": [
+    "模型宽度D与单头维度d保持区分，单头投影为D×d。",
+    "课件通用架构图中的后置归一化和ReLU不作为GPT-2的精确实现；正文采用经核验的前置结构和GELU。",
+    "稳定归一化只对可见位置求最大值和分母。",
+    "预填充选择首个新词元之后，下一次前向才建立该词元的各层键值。",
+    "卷积与注意力的对比按局部固定核和输入相关权重展开，未采用卷积必须固定输入长度的表述。"
+  ],
+  "figures": [
+    {
+      "label": "l12:fig:preln",
+      "type": "original vector schematic",
+      "location": "sections/02_attention.tex",
+      "description": "前置层归一化的残差结构"
+    },
+    {
+      "label": "l12:fig:cache-flow",
+      "type": "original vector schematic",
+      "location": "assets/kv-cache-flow.tex",
+      "description": "单层单头增量注意力的缓存与新查询依赖"
+    }
+  ],
+  "textbook_supplements": [
+    {
+      "source": "../TextBook/Ch20_大语言模型_Large_Language_Models.pdf",
+      "printed_pages": "505-506",
+      "scope": "变长缓存容量、批量权重复用、包含输入输出的算术强度"
+    },
+    {
+      "source": "../TextBook/Ch20_大语言模型_Large_Language_Models.pdf",
+      "printed_pages": "508-509",
+      "scope": "MHA/GQA/MQA，以h_kv统一键值头数，保留FMA=2和GiB口径"
+    }
+  ],
+  "validation_record": "checks/results.json; REVIEW_LOG.md"
+}

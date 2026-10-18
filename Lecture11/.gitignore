@@ -1,0 +1,6 @@
+# Original archive copies remain local; preserve the archive and source record.
+source/original_*
+# Generated validation evidence and rendered pages can be reproduced.
+checks/*.json
+checks/rendered/
+TexOutput/

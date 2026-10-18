@@ -1,0 +1,124 @@
+\section{直方图与并行数据划分}
+\label{l13:sec:histogram}
+
+\subsection{桶映射与计数不变量}
+
+直方图（histogram）统计数据落入不同类别或区间的次数。设输入为 $x_0,x_1,\ldots,x_{N-1}$，共有 $B$ 个桶（bin），桶映射 $b(x)$ 把每个有效输入映射到 $\{0,1,\ldots,B-1\}$。第 $j$ 个桶的计数为
+\begin{equation}
+H_j=\sum_{i=0}^{N-1}\mathbf{1}\{b(x_i)=j\},
+\qquad j=0,\ldots,B-1,
+\label{l13:eq:histogram}
+\end{equation}
+其中指示函数 $\mathbf{1}\{\mathcal E\}$ 在条件 $\mathcal E$ 成立时取 $1$，否则取 $0$。这里每个输入恰好进入一个桶，因此 $\sum_{j=0}^{B-1}H_j=N$。这一总计数不变量适合检查输入遗漏、重复处理或更新丢失，不过总数相等还不足以保证各桶都正确。
+
+对于一个字节表示的灰度值，$x_i\in\{0,\ldots,255\}$，可以取 $B=256$、$b(x_i)=x_i$。若图像宽度为 $W_{\mathrm{img}}$、高度为 $H_{\mathrm{img}}$，输入长度为 $N=W_{\mathrm{img}}H_{\mathrm{img}}$；随后只需按一维数组遍历。以下代码使用 \mbox{\code{unsigned char}} 表示输入字节，避免普通 \mbox{\code{char}} 的符号性使较大字节值变成负下标。
+
+桶也可以表示数值区间。例如，将 $256$ 种灰度值分成四个宽度为 $64$ 的区间，可以取 $b(x)=\lfloor x/64\rfloor$。此时 $0$ 与 $63$ 进入桶 $0$，$64$ 进入桶 $1$，$255$ 进入桶 $3$。映射规则改变了输出桶数，但每个有效像素仍恰好贡献一次计数。
+
+字母频率也是直方图。对输入字符串
+\begin{center}
+\texttt{Programming Massively Parallel Processors}
+\end{center}
+若统一大小写、跳过空格，并令字母 $A$ 到 $Z$ 对应 $26$ 个桶，则共有 $38$ 个有效字母。表\ref{l13:tab:letters}列出所有非零计数；其余字母计数为 $0$。这里“跳过空格”是桶映射前的数据筛选规则，所以总计数应等于有效字母数。
+
+\begin{table}[htbp]
+\centering
+\caption{字母直方图的完整非零计数}
+\label{l13:tab:letters}
+\begin{tabular}{c*{7}{c}}
+\toprule
+字母 & A & C & E & G & I & L & M \\
+次数 & 4 & 1 & 3 & 2 & 2 & 4 & 3 \\
+\midrule
+字母 & N & O & P & R & S & V & Y \\
+次数 & 1 & 3 & 3 & 5 & 5 & 1 & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+直方图可以概括图像灰度、类别频数或数值区间分布。不同应用的差别主要在桶映射，而并行计算面对的共同问题是：每个输入贡献一个增量，多个增量可能同时指向同一个桶。
+
+\subsection{输入划分与输出地址的关系}
+
+将输入分给不同线程，可以保证每个输入位置只被处理一次，但输出桶仍由输入值决定。例如，四个线程当前读到的字母分别为 $P$、$M$、$M$、$E$，则这轮需要给 $P$ 和 $E$ 各加 $1$，给 $M$ 加 $2$。处理两个 $M$ 的线程即使读取了不同位置，也会对同一个输出地址形成竞争。
+
+最直接的并行方案让每个线程读入一个或多个数据，并对相应桶执行原子加一。原子操作解决输出的冲突，输入读取方式则影响全局内存访问效率。这两个方面可以分别设计：相邻线程可以读取相邻数据，但它们所更新的桶仍可能离散或高度集中。
+
+设网格含 $G$ 个线程块，每块有 $T$ 个线程，总线程数为 $P=GT$。为便于比较，暂设每个线程恰好处理 $c$ 个输入，即 $N=Pc$。一种划分方式给全局编号为 $g$ 的线程分配一个连续的长度为 $c$ 的区间，第 $k$ 轮读取位置 $gc+k$。虽然单个线程连续读取，但是同一轮中相邻线程的地址间隔为 $c$，会使一个线程束的访问分散。
+
+另一种方式让线程 $g$ 在第 $k$ 轮读取 $g+kP$。于是同一轮中线程 $g$、$g+1$ 读取相邻位置，而每个线程在不同轮之间跨过 $P$ 个元素。表\ref{l13:tab:assignment}用 $P=4$、$c=4$ 给出完整地址序列。
+
+\begin{table}[htbp]
+\centering
+\caption{四个线程处理十六个输入的两种分配}
+\label{l13:tab:assignment}
+\small
+\begin{tabularx}{\textwidth}{cYY}
+\toprule
+线程 & 每线程连续区间 & 每轮相邻线程访问相邻位置 \\
+\midrule
+$0$ & $0,1,2,3$ & $0,4,8,12$ \\
+$1$ & $4,5,6,7$ & $1,5,9,13$ \\
+$2$ & $8,9,10,11$ & $2,6,10,14$ \\
+$3$ & $12,13,14,15$ & $3,7,11,15$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+在第一轮中，两种方案的线程组分别访问 $0,4,8,12$ 和 $0,1,2,3$。合并访存（coalesced memory access）关注的是同一条访存指令下线程束内各线程地址的组合。后者让访问落在连续地址范围，更容易用少量内存事务完成；实际事务数量还取决于访问宽度、对齐和硬件粒度。四线程表只是缩小的索引示例，相同原则适用于完整线程束。
+
+\subsection{网格跨步核函数与完整启动条件}
+
+将上面的第二种划分写成循环，得到网格跨步循环（grid-stride loop）。设线程块编号为 $r$、块内线程编号为 $t$，则线程的全局编号为 $g=rT+t$，跨步长度为 $P=GT$，依次处理 $g,g+P,g+2P,\ldots$ 中小于 $N$ 的索引。代码\ref{l13:lst:global-hist}直接对公共直方图做全局原子加法。
+
+\noindent\begin{minipage}{\textwidth}
+\begin{lstlisting}[caption={统计 256 种无符号字节值的基本核函数},label={l13:lst:global-hist}]
+__global__ void histogram_global(
+    const unsigned char* input, std::size_t n,
+    unsigned int* hist)
+{
+    std::size_t i = std::size_t(blockIdx.x) * blockDim.x
+                  + threadIdx.x;
+    std::size_t stride = std::size_t(gridDim.x) * blockDim.x;
+
+    for (; i < n; i += stride) {
+        unsigned int bin = input[i];
+        atomicAdd(&hist[bin], 1u);
+    }
+}
+\end{lstlisting}
+\end{minipage}
+
+长度、索引和跨步长度均使用 \mbox{\code{std::size_t}}。乘法之前先提升类型，避免先以较窄整数计算乘积，再将已经溢出的结果赋给宽类型。代码需要包含 \mbox{\code{<cstddef>}} 和 CUDA 运行时头文件。这里的核函数采用一维线程块与一维网格，输入与输出数组互不重叠，输出恰有 $256$ 个计数器。
+
+跨步划分的完整性可以直接证明。任取 $i\in\{0,\ldots,N-1\}$，带余除法给出唯一分解 $i=kP+g$，其中 $0\le g<P$。因此索引 $i$ 恰由线程 $g$ 在第 $k$ 轮处理，既不会遗漏，也不会重复。末尾不足一轮时，条件 $i<N$ 使无对应输入的线程停止循环。网格线程数可以小于输入数，也可以大于输入数。
+
+核函数只累加，因而一次独立统计开始前必须先将公共直方图清零。若希望跨多批输入累积同一结果，则只在第一批之前清零，后续各批需要遵守同样的访问顺序。对于 $32$ 位无符号计数器，每个桶最终计数应不超过 $2^{32}-1$；这项要求约束实际计数，与输入索引使用宽整数是两个不同问题。
+
+代码\ref{l13:lst:launch}给出一个完整的异步启动函数。输入已经位于设备内存，调用者提供合法的线程块数和每块线程数。清零与核函数提交到同一个流（stream），使核函数在清零完成后才开始使用输出。
+
+\noindent\begin{minipage}{\textwidth}
+\begin{lstlisting}[caption={同一流中先清零再启动统计},label={l13:lst:launch}]
+cudaError_t launch_histogram_global(
+    const unsigned char* input, std::size_t n,
+    unsigned int* hist, unsigned int blocks,
+    unsigned int threads, cudaStream_t stream)
+{
+    if (blocks == 0 || threads == 0) {
+        return cudaErrorInvalidConfiguration;
+    }
+    cudaError_t status = cudaMemsetAsync(
+        hist, 0, 256 * sizeof(unsigned int), stream);
+    if (status != cudaSuccess || n == 0) {
+        return status;
+    }
+    histogram_global<<<blocks, threads, 0, stream>>>(
+        input, n, hist);
+    return cudaGetLastError();
+}
+\end{lstlisting}
+\end{minipage}
+
+返回成功表示清零和启动请求已按上述规则提交，异步核函数此时可能仍在执行。主机消费结果之前，需要等待相应流完成并检查完成状态；若之后在同一流中安排设备上的后续计算，则由流内顺序保证先后关系。该函数在 $N=0$ 时仍把输出清零，然后跳过核函数启动。
+
+基本算法总共读取 $N$ 个输入元素，执行 $N$ 次全局原子加。不同输入值决定这些更新如何分布到桶上：分布均匀时，许多桶可以同时接受更新；若大量输入具有相同值，同一个计数器就成为热点。原子操作保证后一种情况下仍得到正确结果，但其性能需要进一步分析。

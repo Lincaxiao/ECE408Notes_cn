@@ -1,0 +1,138 @@
+\section{卷积与池化的前向计算}
+\label{l11:sec:forward}
+
+\subsection{张量形状与求和维度}
+
+设一个批次（batch）包含 $B$ 幅图像，每幅图像有 $C$ 个输入通道，每个通道高 $H$、宽 $W$。卷积层产生 $M$ 个输出通道，每个输出通道使用一组 $C$ 个 $K\times K$ 的二维核。输入、权重和卷积输出分别记为
+\begin{equation}
+  X\in\mathbb{R}^{B\times C\times H\times W},\qquad
+  F\in\mathbb{R}^{M\times C\times K\times K},\qquad
+  Y\in\mathbb{R}^{B\times M\times H_{\mathrm{o}}\times W_{\mathrm{o}}}.
+  \label{l11:eq:shapes}
+\end{equation}
+宽度始终使用 $W$，权重始终使用 $F$，从而避免同一个字母同时表示两种对象。所有数组下标均从 $0$ 开始。表\ref{l11:tab:indices}给出了各索引及其合法范围。
+
+\begin{table}[htbp]
+\centering
+\caption{卷积前向计算的索引约定}
+\label{l11:tab:indices}
+\begin{tabularx}{\linewidth}{L{.14\linewidth}L{.35\linewidth}X}
+\toprule
+索引 & 含义 & 范围\\
+\midrule
+$b$ & 批次中的图像编号 & $0\le b<B$\\
+$c$ & 输入通道编号 & $0\le c<C$\\
+$m$ & 输出通道编号 & $0\le m<M$\\
+$h,w$ & 输出的行、列坐标 & $0\le h<H_{\mathrm{o}},\;0\le w<W_{\mathrm{o}}$\\
+$p,q$ & 核内的行、列偏移 & $0\le p<K,\;0\le q<K$\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+先考虑步幅（stride）为 $1$、无填充（padding）、无空洞、每个输出通道组合全部输入通道的情形，并把偏置与激活留到后面单独处理。固定输出坐标 $(b,m,h,w)$ 后，卷积计算为
+\begin{equation}
+  Y_{b,m,h,w}
+  =\sum_{c=0}^{C-1}\sum_{p=0}^{K-1}\sum_{q=0}^{K-1}
+   F_{m,c,p,q}\,X_{b,c,h+p,w+q}.
+  \label{l11:eq:convolution}
+\end{equation}
+这里的 $h,w$ 确定窗口左上角；$p,q$ 在窗口内部移动；$c$ 遍历同一位置上的全部输入通道。一个输出值是长度为 $CK^2$ 的内积。改变 $m$ 时，输入窗口不变而权重组改变；改变 $h,w$ 时，权重组不变而输入窗口移动；改变 $b$ 时，处理另一幅图像而继续使用同一组参数。
+
+式\eqref{l11:eq:convolution}在信号处理的严格命名中属于互相关（cross-correlation），因为核内的两个索引没有翻转。若采用翻转核的卷积约定，同一个窗口内应使用 $F_{m,c,K-1-p,K-1-q}$。CNN 的前向计算通常把式\eqref{l11:eq:convolution}直接称为卷积。实现时应保持公式中的索引顺序；核不对称时，额外翻转会改变输出。例如，核 $\bigl(\begin{smallmatrix}1&2\\3&4\end{smallmatrix}\bigr)$ 翻转后为 $\bigl(\begin{smallmatrix}4&3\\2&1\end{smallmatrix}\bigr)$，这两组权重与同一输入窗口的内积一般不同。
+
+\subsection{有效卷积的输出尺寸}
+
+有效卷积（valid convolution）只计算卷积核完全位于输入内部的位置。对于高度方向，窗口左上角从 $h=0$ 开始，最下面一个核元素的行坐标是 $h+K-1$。要求该坐标不超过 $H-1$，就得到 $0\le h\le H-K$，因此共有 $H-K+1$ 个合法起点。宽度方向同理，故
+\begin{equation}
+  H_{\mathrm{o}}=H-K+1,\qquad W_{\mathrm{o}}=W-K+1,
+  \qquad H\ge K,\;W\ge K.
+  \label{l11:eq:valid_shape}
+\end{equation}
+这个计数包含起点 $0$ 和终点 $H-K$，所以必须加 $1$。输出数组使用紧凑坐标：$Y_{b,m,0,0}$ 对应输入左上角的第一个完整窗口。若把输出响应画在核中心所对应的原图位置，两者的坐标原点不同，但它们代表相同的局部计算。
+
+例如，$7\times7$ 输入与 $5\times5$ 核产生 $3\times3$ 输出；$3\times3$ 输入与 $2\times2$ 核产生 $2\times2$ 输出；$86\times86$ 输入与 $7\times7$ 核产生 $80\times80$ 输出。增加输出通道数只改变输出张量中的 $M$，不会改变这两个空间尺寸。步幅、填充或核内采样间隔发生变化时，需要重新按窗口合法起点计数，不能直接沿用式\eqref{l11:eq:valid_shape}。
+
+对于高为 $K_h$、宽为 $K_w$ 的矩形核，同样的计数分别给出 $H_{\mathrm{o}}=H-K_h+1$ 和 $W_{\mathrm{o}}=W-K_w+1$，每个输出的内积长度相应为 $CK_hK_w$。下面的推导与代码统一使用方形核，以一个 $K$ 表示两个方向的大小。
+
+\subsection{步幅与零填充的尺寸关系}
+
+设矩形核的高、宽分别为 $K_h,K_w$，两个方向的步幅为正整数 $S_h,S_w$，输入上下各补 $P_h$ 行零、左右各补 $P_w$ 列零，其中填充量为非负整数。输出位置 $(h,w)$ 的核内偏移 $(p,q)$ 对应原输入坐标
+\begin{equation}
+ i=hS_h-P_h+p,\qquad j=wS_w-P_w+q.
+ \label{l11:eq:stride_padding_index}
+\end{equation}
+当 $i,j$ 位于原输入范围内时读取 $X_{b,c,i,j}$，否则该项使用零。填充后的高度为 $H+2P_h$，最后一个完整窗口的起点必须满足 $hS_h+K_h\le H+2P_h$。在两个方向均至少容纳一个完整窗口时，输出尺寸为
+\begin{equation}
+ H_{\mathrm{o}}=\left\lfloor\frac{H+2P_h-K_h}{S_h}\right\rfloor+1,
+ \qquad
+ W_{\mathrm{o}}=\left\lfloor\frac{W+2P_w-K_w}{S_w}\right\rfloor+1.
+ \label{l11:eq:stride_padding_shape}
+\end{equation}
+例如，$H=6,W=8$，使用 $3\times3$ 核、两个方向步幅均为 $2$，四侧各填充 $1$，输出为 $3\times4$。左上输出的窗口从原输入坐标 $(-1,-1)$ 开始；右下输出的窗口从 $(3,5)$ 开始。步幅限定了实际采样的起点，因此填充后末端仍可能有未被最后一个窗口覆盖的位置。
+
+这些公式采用核内相邻元素连续采样的约定。以下算例、张量展开和代码继续使用步幅 $1$、无填充、无空洞的方形核；将它们推广到其他步幅或填充时，必须同时修改输出尺寸和输入坐标映射。
+
+\subsection{逐通道累加的完整算例}
+\label{l11:subsec:channel_example}
+
+考虑一幅三通道图像，$C=3$、$H=W=4$，使用 $K=3$ 的核组产生一个输出通道，即 $M=1$。固定批次编号后，把三个输入通道简写为 $X_0,X_1,X_2$，相应核片简写为 $F_0,F_1,F_2$。同时固定唯一的输出通道 $m=0$，并简写 $Y_{h,w}=Y_{b,0,h,w}$。输入与核组为：
+\begin{equation}
+\begin{aligned}
+X_0&=\begin{bmatrix}1&2&0&1\\1&1&3&2\\0&2&2&0\\2&1&0&3\end{bmatrix},&
+X_1&=\begin{bmatrix}0&2&1&0\\0&3&2&1\\1&1&0&2\\2&1&0&3\end{bmatrix},&
+X_2&=\begin{bmatrix}1&2&1&0\\0&1&3&2\\3&3&2&0\\1&3&2&0\end{bmatrix},\\[.6em]
+F_0&=\begin{bmatrix}1&1&1\\2&2&3\\2&1&0\end{bmatrix},&
+F_1&=\begin{bmatrix}1&2&3\\1&1&0\\3&0&1\end{bmatrix},&
+F_2&=\begin{bmatrix}0&1&1\\1&0&2\\1&2&1\end{bmatrix}.
+\end{aligned}
+\label{l11:eq:channel_example_inputs}
+\end{equation}
+输出高和宽均为 $4-3+1=2$。先求左上角的 $Y_{0,0}$，每个通道都取输入左上角的 $3\times3$ 窗口。按照窗口的行分别相乘再相加，可以直接看见每个通道如何贡献到同一个标量：
+\begin{equation}
+\begin{aligned}
+v_0
+&=(1\cdot1+2\cdot1+0\cdot1)
+ +(1\cdot2+1\cdot2+3\cdot3)
+ +(0\cdot2+2\cdot1+2\cdot0)\\
+&=3+13+2=18,\\[.25em]
+v_1
+&=(0\cdot1+2\cdot2+1\cdot3)
+ +(0\cdot1+3\cdot1+2\cdot0)
+ +(1\cdot3+1\cdot0+0\cdot1)\\
+&=7+3+3=13,\\[.25em]
+v_2
+&=(1\cdot0+2\cdot1+1\cdot1)
+ +(0\cdot1+1\cdot0+3\cdot2)
+ +(3\cdot1+3\cdot2+2\cdot1)\\
+&=3+6+11=20.
+\end{aligned}
+\label{l11:eq:channel_contributions}
+\end{equation}
+三个部分和合并后，$Y_{0,0}=18+13+20=51$。累加变量在开始计算这个输出前初始化一次为 $0$；处理完第一个通道后为 $18$，处理完第二个通道后为 $31$，处理完第三个通道后才写回最终值 $51$。如果在每个通道开始时清零并覆盖输出，就会丢失先前通道的贡献。
+
+将窗口移到其余三个合法起点，三个通道各自贡献的 $2\times2$ 矩阵以及最终结果为
+\begin{equation}
+  Y=
+  \begin{bmatrix}18&23\\20&16\end{bmatrix}
+  +\begin{bmatrix}13&14\\20&17\end{bmatrix}
+  +\begin{bmatrix}20&13\\20&15\end{bmatrix}
+  =\begin{bmatrix}51&50\\60&48\end{bmatrix}.
+  \label{l11:eq:channel_example_output}
+\end{equation}
+这四个输出使用相同的核组。它们的输入窗口彼此重叠，但输出地址不同；这种输入可复用、输出可独立写入的结构，正是后续并行实现的依据。
+
+\subsection{参数量、乘加次数与张量存储量}
+\label{l11:subsec:work_count}
+
+一次乘加（multiply-accumulate，MAC）表示将一个乘积累加到已有的和。式\eqref{l11:eq:convolution}中的每个输出需要 $CK^2$ 次乘加，总输出元素数为 $BMH_{\mathrm{o}}W_{\mathrm{o}}$。如果把一次乘加按一次乘法和一次加法合计为两次浮点运算（floating-point operations，FLOPs），则
+\begin{equation}
+  N_{\mathrm{MAC}}=BMH_{\mathrm{o}}W_{\mathrm{o}} CK^2,
+  \qquad
+  N_{\mathrm{FLOP}}=2BMH_{\mathrm{o}}W_{\mathrm{o}} CK^2.
+  \label{l11:eq:flops}
+\end{equation}
+这里采用每次累加均计一次加法的惯例，与代码中从 $0$ 开始执行乘加的形式对应。即使硬件把乘法和加法融合成一条指令，按照这个统计口径仍记为两次浮点运算。偏置、激活和池化需要另行计数。
+
+参数存储与这些运算量具有不同的缩放关系。权重只有 $MCK^2$ 个，与批次大小和输出空间位置数无关；输入有 $BCHW$ 个元素，输出有 $BMH_{\mathrm{o}}W_{\mathrm{o}}$ 个元素。使用 $32$ 位浮点数时，每个数组的字节数等于元素数乘 $4$。增加 $B$ 会增加输入、输出和卷积总运算量，而不会增加模型权重数量；增加图像尺寸会增加输出位置数，却仍复用同一组核参数。
+
+在上面的三通道算例中，只有 $1\times3\times3^2=27$ 个权重，却需要为四个输出执行 $4\times27=108$ 次乘加，即 $216$ 次浮点运算。若处理一百幅同样尺寸的图像，权重仍为 $27$ 个，卷积运算量则增为 $21\,600$ 次浮点运算。

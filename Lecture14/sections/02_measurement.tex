@@ -1,0 +1,110 @@
+\subsection{正确性检查与性能构建}
+
+性能比较成立的前提是各实现完成同一个计算。对矩阵乘法，可以先使用可手工核算的小矩阵，再使用中央处理器（CPU）参考实现或可信的 GPU 实现比较全部输出。全 $1$ 输入能快速检查数量级，因为每个输出都应等于 $K$；非方阵、非均匀数据和不能被分块宽度整除的尺寸则能检查索引与边界。仅检查少数输出可能漏掉线程映射错误。
+
+浮点加法不满足严格结合律，不同分块或乘加融合方式会改变舍入路径。设参考结果为 $C^{\mathrm{ref}}_{ij}$，一种逐元素判据是
+\begin{equation}
+ |C_{ij}-C^{\mathrm{ref}}_{ij}|
+ \leq \varepsilon_{\mathrm{abs}}+
+       \varepsilon_{\mathrm{rel}}|C^{\mathrm{ref}}_{ij}|.
+ \label{l14:eq:validation}
+\end{equation}
+绝对容差照顾接近零的结果，相对容差照顾数值尺度较大的结果。容差应依据数据类型、输入尺度和累加长度选定，同时单独检查非有限值；不能因为更宽松的容差能通过，就认定一个越界或竞争问题已经解决。
+
+计算检查器（Compute Sanitizer）提供几种互补检查。\code{memcheck}检查非法或未对齐的内存访问，并可检查泄漏；\code{racecheck}检查共享内存访问竞争；\code{initcheck}检查未初始化的全局内存读取；\code{synccheck}检查同步原语的使用错误。对代码\ref{l14:lst:shared}，缺少前一个同步可能让线程读取尚未写入的共享元素，缺少后一个同步则可能使下一阶段覆盖仍在被读取的数据。
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[style=cuda,language=bash,numbers=none,caption={构建待测程序并分别运行正确性工具}]
+nvcc -O3 -lineinfo gemm_demo.cu -o gemm_demo
+compute-sanitizer --tool memcheck ./gemm_demo
+compute-sanitizer --tool racecheck ./gemm_demo
+compute-sanitizer --tool initcheck ./gemm_demo
+compute-sanitizer --tool synccheck ./gemm_demo
+\end{lstlisting}
+\end{minipage}
+
+这里的 \code{gemm_demo.cu} 和 \code{gemm_demo} 分别表示待测程序的源文件与可执行文件；构建时还应选择与目标 GPU 匹配的架构。检查工具会改变运行开销，它们的执行时间不用于比较正常性能。不同工具通过以后，仍要确认数值输出，因为内存访问合法并不能保证公式或索引正确。
+
+性能构建应保留正常优化，并加入 \code{-lineinfo}，以便把设备指令映射回源代码行。表\ref{l14:tab:compile}区分容易混用的选项。
+
+\begin{table}[htbp]
+\centering\small
+\caption{与性能分析相关的编译选项}
+\label{l14:tab:compile}
+\begin{tabularx}{\textwidth}{@{}p{28mm}YY@{}}
+\toprule
+选项 & 作用 & 对性能分析的意义\\
+\midrule
+\code{-O3} & 启用主机编译的优化级别 & 与正常发布构建保持一致；设备调试选项需另行检查\\
+\code{-lineinfo} & 生成设备代码行号信息 & 便于把热点定位到源代码，并保留性能优化\\
+\code{-g} & 生成主机调试信息 & 本身不等于关闭设备代码优化；不是设备行号信息的替代品\\
+\code{-G} & 生成设备调试信息 & 通常会关闭设备优化，适合调试；一般性能测量避免使用\\
+\code{-pg} & 为传统主机分析器生成插桩 & 不属于此处的 GPU 性能分析构建选项\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{流、事件与异步执行的计时范围}
+
+CUDA \term{流}{stream}是按顺序执行操作的队列，类型为 \code{cudaStream_t}。同一流中的内核、传输和事件遵循该流的顺序；不同流之间可以在资源和依赖允许时重叠。未显式给出流时使用默认流，其跨流同步语义还受默认流模式影响。使用明确创建的流，能让计时范围及依赖更容易检查。
+
+一次内核启动通常先将工作提交给 GPU，主机随后继续执行。因此，主机在内核启动语句前后立即读取时钟，可能主要测到提交开销。CUDA \term{事件}{event}是插入某个流中的标记，类型为 \code{cudaEvent_t}；事件时间戳在设备执行推进到该标记时记录。同一流中依次插入开始事件、待测内核和结束事件，再等待结束事件完成，就能测量这一段设备时间。
+
+以下函数接受一个 \code{launch} 可调用对象，它将待测内核启动到参数指定的同一条流中。头文件提供运行时类型和异常类型；\code{check}把失败的 CUDA 调用转成异常，避免把未正常执行的内核计入有效结果。
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={带预热与重复执行的 CUDA 事件计时},label={l14:lst:timer}]
+#include <cuda_runtime.h>
+#include <stdexcept>
+
+inline void check(cudaError_t status) {
+  if (status != cudaSuccess)
+    throw std::runtime_error(cudaGetErrorString(status));
+}
+
+template<class Launch>
+float average_kernel_ms(Launch launch, cudaStream_t stream,
+                        int warmup, int repeats) {
+  if (warmup < 0 || repeats <= 0)
+    throw std::invalid_argument("invalid iteration count");
+  for (int i = 0; i < warmup; ++i) launch();
+  check(cudaGetLastError());
+  check(cudaStreamSynchronize(stream));
+  cudaEvent_t start, stop;
+  check(cudaEventCreate(&start));
+  check(cudaEventCreate(&stop));
+  check(cudaEventRecord(start, stream));
+  for (int i = 0; i < repeats; ++i) launch();
+  check(cudaGetLastError());
+  check(cudaEventRecord(stop, stream));
+  check(cudaEventSynchronize(stop));
+  float elapsed_ms = 0.0f;
+  check(cudaEventElapsedTime(&elapsed_ms, start, stop));
+  check(cudaEventDestroy(start));
+  check(cudaEventDestroy(stop));
+  return elapsed_ms / repeats;
+}
+\end{lstlisting}
+\end{minipage}
+
+例如，若 \code{A}、\code{B}、\code{C} 已经指向设备数组，并已创建 \code{stream}，可使用以下调用。这里的 $5$ 次预热和 $20$ 次重复只是计时示例参数。
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={将计时对象显式绑定到同一条流}]
+dim3 block(16, 16);
+dim3 grid((N + 15) / 16, (M + 15) / 16);
+auto launch = [&]() {
+  gemm_shared<16><<<grid, block, 0, stream>>>(
+      A, B, C, M, N, K);
+};
+float ms = average_kernel_ms(launch, stream, 5, 20);
+\end{lstlisting}
+\end{minipage}
+
+分配、数据上传和结果校验位于计时区间之外，就得到内核计算口径；若要比较应用端到端时间，则需要另行包含这些工作，并在主机计时结束前等待对应的设备工作完成。
+
+预热可以排除首次上下文初始化、延迟加载及起始时钟状态的一部分影响，但预热也改变缓存状态。重复运行同一矩阵得到的是该重复执行场景的性能，应与实际应用的输入复用方式相符。对很短的内核，两事件间还可能存在主机未及时提交后续启动导致的空隙；因而重复平均时间仍需结合时间线理解。
+
+流间可以通过事件记录函数 \code{cudaEventRecord} 与流等待函数 \code{cudaStreamWaitEvent} 建立“生产完成后再消费”的依赖。先在生产流记录完成事件，再让消费流等待该事件，就只建立了所需的先后关系，并不要求主机一直阻塞。若要测量多条流共同完成的总设备区间，需要让结束标记依赖所有相关流的完成事件；随意在两条无依赖关系的流上分别记录开始和结束事件，不能定义可靠的整体工作范围。
+
+主机与设备传输能否和计算重叠，还取决于复制引擎、数据依赖、流配置，以及主机缓冲区是否适合异步传输。多条流提供表达并发的机会，实际是否重叠必须在时间线上确认。相同原则也适用于频率：记录 GPU、工具版本、时钟策略和测量范围，才能解释不同测试之间的差异。

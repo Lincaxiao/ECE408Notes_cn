@@ -1,0 +1,87 @@
+{
+  "source_pdf": "ece408-lecture14-profiling-FL26.pdf",
+  "page_numbering": "one-based",
+  "coordinate_system": "PDF points, top-left origin; approximate crop rectangles",
+  "crops": [
+    {
+      "file": "l1_path.png",
+      "page": 15,
+      "rectangle": [
+        54,
+        161,
+        885,
+        454
+      ]
+    },
+    {
+      "file": "nsys_timeline.png",
+      "page": 36,
+      "rectangle": [
+        52,
+        0,
+        912,
+        369
+      ]
+    },
+    {
+      "file": "scheduler.png",
+      "page": 50,
+      "rectangle": [
+        228,
+        105,
+        957,
+        452
+      ]
+    },
+    {
+      "file": "roofline_comparison.png",
+      "page": 61,
+      "rectangle": [
+        50,
+        210,
+        911,
+        461
+      ]
+    },
+    {
+      "file": "memory_chart.png",
+      "page": 47,
+      "rectangle": [
+        168.4,
+        194.4,
+        738.1,
+        525.9
+      ]
+    },
+    {
+      "file": "stall_comparison.png",
+      "page": 73,
+      "rectangle": [
+        51.2,
+        270,
+        908.8,
+        528.6
+      ]
+    },
+    {
+      "file": "instruction_comparison.png",
+      "page": 74,
+      "rectangle": [
+        50.4,
+        288.9,
+        908,
+        406.6
+      ]
+    },
+    {
+      "file": "vector_sass_detail.png",
+      "page": 76,
+      "rectangle": [
+        182.8,
+        194.4,
+        563,
+        287
+      ]
+    }
+  ]
+}

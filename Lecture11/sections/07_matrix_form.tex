@@ -1,0 +1,100 @@
+\Needspace{14\baselineskip}
+\section{卷积的矩阵表示与输入展开}
+\label{l11:sec:matrix}
+
+\subsection{从局部内积到矩阵乘法}
+\label{l11:subsec:matrix_equivalence}
+
+固定一幅图像和一个输出位置 $(h,w)$，把该位置所需的全部输入通道窗口连接成一个长度为 $CK^2$ 的向量。每个输出通道都将自己的核组与这个向量做内积，因此可以把不同输出通道的权重排成矩阵的各行，把不同输出空间位置所需的输入向量排成另一个矩阵的各列。矩阵乘法中的一个行列内积就生成一个卷积输出。
+
+输入展开（image-to-column，im2col）是按照上述方式重新组织输入窗口的操作。令 $D=CK^2$ 为一个输出所需内积的长度，$L=H_{\mathrm{o}}W_{\mathrm{o}}$ 为每个输出通道的位置数。对固定图像 $b$，定义核矩阵 $A\in\mathbb{R}^{M\times D}$、展开矩阵 $U_b\in\mathbb{R}^{D\times L}$，以及矩阵形式的输出 $V_b\in\mathbb{R}^{M\times L}$。
+
+首先固定展开顺序。核内列坐标 $q$ 变化最快，其次为核内行坐标 $p$，最后为输入通道 $c$，所以展开行号为 $r=cK^2+pK+q$。输出列坐标 $w$ 变化最快，其次为输出行坐标 $h$，所以展开列号为 $\ell=hW_{\mathrm{o}}+w$。由这两个编号得到
+\begin{equation}
+  A_{m,r}=F_{m,c,p,q},
+  \qquad
+  (U_b)_{r,\ell}=X_{b,c,h+p,w+q},
+  \qquad
+  V_b=AU_b.
+  \label{l11:eq:matrix_mapping}
+\end{equation}
+展开矩阵的一列包含一个输出位置所需的全部 $C$ 个窗口，列内每连续 $K^2$ 行属于一个输入通道。展开矩阵的一行则固定了一个输入通道及一个核内偏移，让输出窗口的左上角遍历全部空间位置。
+
+矩阵乘法与卷积的等价性可以逐元素验证。对 $\ell=hW_{\mathrm{o}}+w$，用 $r$ 与 $(c,p,q)$ 的一一对应关系重写内积，得到
+\begin{equation}
+\begin{aligned}
+  (V_b)_{m,\ell}
+  &=\sum_{r=0}^{D-1}A_{m,r}(U_b)_{r,\ell}\\
+  &=\sum_{c=0}^{C-1}\sum_{p=0}^{K-1}\sum_{q=0}^{K-1}
+    F_{m,c,p,q}X_{b,c,h+p,w+q}
+   =Y_{b,m,h,w}.
+\end{aligned}
+\label{l11:eq:matrix_proof}
+\end{equation}
+恢复卷积输出时，只需把 $V_b$ 的每一行按 $H_{\mathrm{o}}\times W_{\mathrm{o}}$ 解释。若 $V_b$ 按行连续存储，其内部顺序与对应图像的 $Y_{b,:,:,:}$ 已经一致，这一步不需要再搬运元素。
+
+这套组织方式使同一展开列可被所有 $M$ 个输出通道使用，也使同一权重行可用于全部 $L$ 个空间位置。随后可以用分块矩阵乘法，把这两种复用显式放入共享内存和寄存器。
+
+\subsection{三通道、双输出的完整矩阵算例}
+\label{l11:subsec:im2col_example}
+
+取 $B=1$、$C=3$、$M=2$、$H=W=3$、$K=2$。输出尺寸为 $H_{\mathrm{o}}=W_{\mathrm{o}}=2$，因而 $D=12$、$L=4$。固定唯一图像后，三个输入通道为
+\begin{equation}
+  X_0=\begin{bmatrix}1&2&0\\1&1&3\\0&2&2\end{bmatrix},\qquad
+  X_1=\begin{bmatrix}0&2&1\\0&3&2\\1&1&0\end{bmatrix},\qquad
+  X_2=\begin{bmatrix}1&2&1\\0&1&3\\3&3&2\end{bmatrix}.
+  \label{l11:eq:small_matrix_inputs}
+\end{equation}
+将两组卷积权重写成下面的 $2\times12$ 矩阵。每一行对应一个输出通道，每连续四列对应一个输入通道上的 $2\times2$ 核，竖线仅用于标出通道之间的分界：
+\begin{equation}
+  A=
+  \left[\begin{array}{rrrr|rrrr|rrrr}
+  1&1&2&2&1&1&1&1&0&1&1&0\\
+  1&0&0&1&2&1&2&1&1&2&2&0
+  \end{array}\right].
+  \label{l11:eq:small_matrix_weights}
+\end{equation}
+例如，第一行的前四个数 $[1,1,2,2]$ 对应 $F_{0,0}=\bigl(\begin{smallmatrix}1&1\\2&2\end{smallmatrix}\bigr)$，下一组 $[1,1,1,1]$ 对应 $F_{0,1}$。把每组连续四个数按两行两列恢复，就能得到全部六个核片。
+
+四个输出位置按照 $(0,0),(0,1),(1,0),(1,1)$ 排列为四列。依次取各位置上的输入窗口，并按通道、核行、核列顺序展开，得到
+\begin{equation}
+  U_0=
+  \left[\begin{array}{rrrr}
+  1&2&1&1\\
+  2&0&1&3\\
+  1&1&0&2\\
+  1&3&2&2\\\hline
+  0&2&0&3\\
+  2&1&3&2\\
+  0&3&1&1\\
+  3&2&1&0\\\hline
+  1&2&0&1\\
+  2&1&1&3\\
+  0&1&3&3\\
+  1&3&3&2
+  \end{array}\right].
+  \label{l11:eq:small_unroll}
+\end{equation}
+上、中、下三个四行区域分别来自输入通道 $0,1,2$。例如，第三列对应 $(h,w)=(1,0)$，其最后四个数必须来自 $X_2$ 中的窗口 $\bigl(\begin{smallmatrix}0&1\\3&3\end{smallmatrix}\bigr)$，所以这一段为 $[0,1,3,3]^{\mathsf T}$。核组和输入窗口必须按相同的 $(c,p,q)$ 顺序展开；只改变一侧的排列通常会改变内积。
+
+第一个输出通道的左上值由 $A$ 第一行与 $U_0$ 第一列相乘得到。把十二项按三个输入通道分组，计算为
+\begin{equation}
+\begin{aligned}
+  (V_0)_{0,0}
+  &=(1\cdot1+1\cdot2+2\cdot1+2\cdot1)\\
+  &\quad +(1\cdot0+1\cdot2+1\cdot0+1\cdot3)\\
+  &\quad +(0\cdot1+1\cdot2+1\cdot0+0\cdot1)
+   =7+5+2=14.
+\end{aligned}
+\label{l11:eq:small_dot}
+\end{equation}
+对两行和四列完成全部内积后，得到
+\begin{equation}
+  V_0=AU_0=
+  \begin{bmatrix}14&20&15&24\\12&24&17&26\end{bmatrix},
+  \qquad
+  Y_{0,0}=\begin{bmatrix}14&20\\15&24\end{bmatrix},\quad
+  Y_{0,1}=\begin{bmatrix}12&24\\17&26\end{bmatrix}.
+  \label{l11:eq:small_matrix_output}
+\end{equation}
+这里 $Y_{0,0}$ 与 $Y_{0,1}$ 分别固定图像编号和输出通道编号，保留下来的矩阵行、列对应输出的两个空间坐标。矩阵乘法只是重新排列了乘积项的组织方式，输出数值与逐通道卷积一致。

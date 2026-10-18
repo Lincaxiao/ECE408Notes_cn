@@ -1,6 +1,6 @@
 # ECE 408 中文讲义
 
-ECE 408 课程的中文讲义与 LaTeX 源码，目前包含第 1–10 讲。
+ECE 408 课程的中文讲义与 LaTeX 源码，目前包含第 1–15 讲。
 
 [阅读完整合订本 ECE408.pdf](ECE408.pdf)
 
@@ -16,6 +16,11 @@ ECE 408 课程的中文讲义与 LaTeX 源码，目前包含第 1–10 讲。
 | 8 | [Convolution Concept Constant Cache](Lecture8/ECE408_L08_Convolution_Concept_Constant_Cache_CN.pdf) |
 | 9 | [2D Tiled Convolution Kernel; Reuse Analysis](Lecture9/ECE408_L09_2D_Tiled_Convolution_and_Reuse_Analysis_CN.pdf) |
 | 10 | [Introduction to ML; Inference and Training in DNNs](Lecture10/ECE408_L10_Introduction_to_ML_Inference_and_Training_in_DNNs_CN.pdf) |
+| 11 | [Computation in Convolutional Neural Networks](Lecture11/ECE408_L11_Computation_in_Convolutional_Neural_Networks_CN.pdf) |
+| 12 | [Computation in Large Language Models](Lecture12/ECE408_L12_Computation_in_Large_Language_Models_CN.pdf) |
+| 13 | [Atomic Operations and Histogramming](Lecture13/ECE408_L13_Atomic_Operations_and_Histogramming_CN.pdf) |
+| 14 | [Profiling on Nvidia GPU](Lecture14/ECE408_L14_Profiling_on_Nvidia_GPU_CN.pdf) |
+| 15 | [Parallel Computation Patterns Reduction Trees](Lecture15/ECE408_L15_Parallel_Computation_Patterns_Reduction_Trees_CN.pdf) |
 
 ## 编译
 
@@ -23,8 +28,11 @@ ECE 408 课程的中文讲义与 LaTeX 源码，目前包含第 1–10 讲。
 
 ```sh
 latexmk ECE408.tex
-latexmk Lecture9/ECE408_L09_2D_Tiled_Convolution_and_Reuse_Analysis_CN.tex
-latexmk Lecture10/ECE408_L10_Introduction_to_ML_Inference_and_Training_in_DNNs_CN.tex
+latexmk Lecture11/ECE408_L11_Computation_in_Convolutional_Neural_Networks_CN.tex
+latexmk Lecture12/ECE408_L12_Computation_in_Large_Language_Models_CN.tex
+latexmk Lecture13/ECE408_L13_Atomic_Operations_and_Histogramming_CN.tex
+latexmk Lecture14/ECE408_L14_Profiling_on_Nvidia_GPU_CN.tex
+latexmk Lecture15/ECE408_L15_Parallel_Computation_Patterns_Reduction_Trees_CN.tex
 ```
 
 共用样式位于 `style/`，讲次清单位于 `lectures.tex`；各讲 `content.tex` 引入 `sections/` 中的正文，单讲与合订本使用同一份内容。最终 PDF 与主 `.tex` 同级，编译辅助文件进入 `TexOutput/`。新增和修订讲义遵循 [讲义模板](LECTURE_NOTES_TEMPLATE.md)。
@@ -39,14 +47,25 @@ Git 跟踪讲义源码、共用样式、构建配置、必要图片及来源索�
 
 ## 示例验证
 
-无需 GPU 的卷积索引与神经网络梯度检查：
+无需 GPU 的索引、数值与算法检查：
 
 ```sh
 python3 Lecture8/code/validate_indexing.py
 python3 Lecture9/code/verify_notes.py
 python3 Lecture10/checks/verify_gradients.py
+python3 Lecture11/checks/verify.py
+python3 Lecture12/checks/verify.py
+python3 Lecture13/checks/verify_histogram.py
+python3 Lecture14/checks/verify_numbers.py
+python3 Lecture15/checks/verify_examples.py
 ```
 
-第 10 讲验证需要 NumPy，结果保存到 `checks/numeric_results.json`。
+第 10、12 讲验证需要 NumPy；第 11 讲还需要支持 C++17 和 UBSan 的 Clang。各讲结果写入其 `checks/` 或代码目录。
+
+第 14、15 讲中来源于课件或教材且未改动的代码保持原样，不另行验证其正确性；检查新增解释、索引与数值例题，并核对代码完整性。
 
 CUDA 示例运行需要另行配置 CUDA Toolkit 和兼容的 NVIDIA GPU。
+
+第 11–15 讲的教材补充对应关系、可重复运行的验证命令和实际执行状态见各讲 README；教材来源与编辑记录不编入成品。
+
+本次整合的页数、版面回归和实际验证边界见 [第 11–15 讲验收记录](VALIDATION_L11_L15.md)。

@@ -1,0 +1,12 @@
+{
+  "cpu_cases": 420,
+  "index_coverage": "passed",
+  "per_bin_counts": "passed",
+  "aggregation_and_final_flush": "passed",
+  "numeric_examples": "passed",
+  "listing_code_consistency": 4,
+  "l2_fraction": 0.4999282536949347,
+  "cuda_compile": "not run",
+  "gpu_execution": "not run",
+  "gpu_timing": "not run"
+}

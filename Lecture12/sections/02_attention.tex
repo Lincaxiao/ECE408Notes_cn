@@ -1,0 +1,171 @@
+\Needspace{20\baselineskip}
+\section{因果多头注意力与层内计算}
+\label{l12:sec:attention}
+
+\subsection{查询、键和值的投影}
+
+自注意力（self-attention）根据当前输入决定不同位置之间的混合权重。对一个注意力头，设输入为 $X\in\mathbb{R}^{N\times D}$。通过三个独立的可训练投影得到查询（query）、键（key）和值（value）：
+\begin{equation}
+  Q=XW_Q,\qquad K=XW_K,\qquad V=XW_V,
+  \qquad W_Q,W_K,W_V\in\mathbb{R}^{D\times d}.
+  \label{l12:eq:qkv}
+\end{equation}
+这里暂时省略头编号，并省略偏置项，以突出矩阵乘法；实际模型若含有投影偏置，仍需按行相加。每个输出矩阵均为 $N\times d$。写到元素层面，$Q_{i,r}=\sum_{c=0}^{D-1}X_{i,c}(W_Q)_{c,r}$，所以投影只对同一位置的特征做线性组合，还没有混合不同位置的信息。
+
+查询 $q_i=Q_{i,:}$ 决定位置 $i$ 如何评价其他位置；键 $k_j=K_{j,:}$ 提供位置 $j$ 用于匹配的特征；值 $v_j=V_{j,:}$ 则提供匹配之后要组合的内容。三者由同一序列产生，所以称为自注意力。在交叉注意力中，查询和键值可以来自两个不同的表示序列。
+
+查询与键的内积 $q_i k_j^{\mathsf T}$ 给出有方向的匹配分数。由于 $W_Q$ 与 $W_K$ 一般不同，$q_i k_j^{\mathsf T}$ 与 $q_j k_i^{\mathsf T}$ 不要求相等。因此，注意力矩阵的第 $i$ 行描述“位置 $i$ 如何读取其他位置”，不应理解成一个必然对称的相似度矩阵。值向量随后按这些权重被组合；最终加权的对象是 $V$ 中的行。
+
+卷积通常在固定局部范围内，使用训练后固定且跨位置共享的核系数来混合输入。自注意力的混合权重由当前输入重新计算，可以覆盖掩码允许的全部位置。两者都可以处理变化的序列长度，其主要差别在于连接范围以及混合系数如何确定。
+
+\subsection{缩放、因果掩码与加权聚合}
+
+先计算缩放分数 $S=QK^{\mathsf T}/\sqrt d\in\mathbb{R}^{N\times N}$。缩放因子由单头维度 $d$ 决定。为理解其作用，暂设查询和键的各分量独立，均值为零、方差为一，并且不同维度的乘积互不相关。于是每项 $q_{i,r}k_{j,r}$ 的方差为一，包含 $d$ 项的点积方差为 $d$，标准差为 $\sqrt d$。除以 $\sqrt d$ 后，分数尺度不再仅因头维度增加而增长。
+
+这个估算说明了缩放的动机，不要求训练后的分量严格满足独立分布。若分数尺度过大，指数归一化容易把概率集中到少数位置，其他位置的梯度也会变小。$1/\sqrt d$ 作用于每个点积，与后续归一化中减去行最大值分别解决尺度和数值稳定性问题。
+
+因果掩码（causal mask）限制位置 $i$ 只能读取 $0,\ldots,i$。用加性掩码 $M$ 表示这个约束，单头的完整计算为
+\begin{equation}
+\begin{aligned}
+  M_{ij}&=\begin{cases}0,&j\leq i,\\-\infty,&j>i,\end{cases}
+  &P&=\operatorname{softmax}_{\mathrm{row}}\!\left(\frac{QK^{\mathsf T}}{\sqrt d}+M\right),\\
+  O&=PV,
+  &O_{i,:}&=\sum_{j=0}^{i}P_{ij}v_j.
+\end{aligned}
+\label{l12:eq:attention}
+\end{equation}
+下标 $\mathrm{row}$ 表示独立归一化每一行。对于有效位置 $j\leq i$，$P_{ij}\geq0$，且 $\sum_{j=0}^{i}P_{ij}=1$；对于 $j>i$，$\exp(-\infty)=0$，因此权重为零。$P$ 是包含对角线的下三角矩阵。
+
+对角线保留是因为当前位置的词元已经是输入。例如，已知 $t_0,t_1,t_2$ 时，位置 $2$ 的输出用来预测 $t_3$，读取 $t_2$ 不会读取到预测目标。若把对角线也屏蔽，第一行将没有任何有效位置，同时改变模型原本的条件分布。
+
+从形状上看，第一项乘法 $(N\times d)(d\times N)$ 把特征维上的匹配变成位置之间的关系；第二项乘法 $(N\times N)(N\times d)$ 再把这些关系应用到值向量上。结果 $O\in\mathbb{R}^{N\times d}$ 的每一行是可见值向量的凸组合。多个头的拼接、输出投影和残差相加继续变换这个结果，所以完整层的输出不受这个单头凸组合性质直接约束。
+
+\subsection{多个注意力头与特征融合}
+
+多头注意力（multi-head attention）包含 $h$ 个头，编号为 $a=0,\ldots,h-1$。每个头分别配置查询、键和值的投影矩阵 $W_Q^{(a)}$、$W_K^{(a)}$ 和 $W_V^{(a)}$。各头从相同的输入构造不同的查询、键和值，在不同的投影空间中形成各自的权重分布。它们可以学习不同位置关系和特征关系；这些关系由训练形成，不需要给每个头指定一种分类任务。
+
+各头在给定输入后可以独立计算。令第 $a$ 个头的输出为 $O^{(a)}\in\mathbb{R}^{N\times d}$，沿特征方向拼接，再经过输出投影：
+\begin{equation}
+  Z=\operatorname{Concat}\!\left(O^{(0)},\ldots,O^{(h-1)}\right)
+  \in\mathbb{R}^{N\times hd},\qquad
+  \operatorname{MHA}(X)=ZW_O+b_O,
+  \label{l12:eq:mha}
+\end{equation}
+其中 $W_O\in\mathbb{R}^{hd\times D}$、$b_O\in\mathbb{R}^D$，偏置按行广播。标准设置令 $hd=D$，所以输出形状回到 $N\times D$，能够与输入残差相加。拼接保留不同头的通道，$W_O$ 再把它们线性混合。
+
+在存储层面，可以把所有头的查询投影横向拼成 $\overline W_Q\in\mathbb{R}^{D\times D}$，一次计算 $X\overline W_Q\in\mathbb{R}^{N\times D}$，再将每行的 $D$ 个分量分成 $h$ 组、每组 $d$ 个分量。键和值可以同样处理；进一步把三组权重拼为 $W_{QKV}\in\mathbb{R}^{D\times3D}$，就能用一次矩阵乘法得到全部投影。逻辑上的多头独立与物理实现中的融合计算彼此兼容。
+
+\subsection{残差连接、层归一化与前馈网络}
+
+注意力只是一个完整层中的子层。残差连接（residual connection）把子层变换的结果与其输入逐元素相加，例如 $X+F(X)$。这样，原有表示可以直接传递，同时由 $F$ 提供更新量；相加的两个矩阵必须具有相同形状。归一化与残差的先后顺序会改变实际函数，因此实现时必须固定顺序。
+
+GPT-2 使用前置层归一化（pre-layer normalization）。若 $X^{(\ell)}$ 是第 $\ell$ 层输入，则完整层写为
+\begin{equation}
+\begin{aligned}
+  U^{(\ell)}&=X^{(\ell)}+
+     \operatorname{MHA}_{\ell}\!\left(\operatorname{LN}_{\ell,1}(X^{(\ell)})\right),\\
+  X^{(\ell+1)}&=U^{(\ell)}+
+     \operatorname{FFN}_{\ell}\!\left(\operatorname{LN}_{\ell,2}(U^{(\ell)})\right).
+\end{aligned}
+\label{l12:eq:preln-block}
+\end{equation}
+这里每个层归一化算子具有自己的一组参数。在式~\eqref{l12:eq:qkv} 中，$X$ 表示送入注意力投影的矩阵；对应到式~\eqref{l12:eq:preln-block}，它就是归一化后的 $\operatorname{LN}_{\ell,1}(X^{(\ell)})$。另一种常见的后置形式把子层写为 $\operatorname{LN}(X+F(X))$。两种放置方式的张量形状相同，但数值结果不同。
+
+层归一化（layer normalization）独立处理每个位置的特征。对一行 $x_i\in\mathbb{R}^D$，定义
+\begin{equation}
+\begin{aligned}
+  \mu_i&=\frac{1}{D}\sum_{c=0}^{D-1}x_{i,c},\qquad
+  \sigma_i^2=\frac{1}{D}\sum_{c=0}^{D-1}(x_{i,c}-\mu_i)^2,\\
+  \operatorname{LN}(x_i)_c&=\gamma_c
+  \frac{x_{i,c}-\mu_i}{\sqrt{\sigma_i^2+\varepsilon}}+\beta_c.
+\end{aligned}
+\label{l12:eq:layernorm}
+\end{equation}
+其中 $\gamma,\beta\in\mathbb{R}^D$ 是可训练的逐特征缩放和平移参数，$\varepsilon>0$ 用于稳定分母。求均值和方差的范围是同一位置的 $D$ 个特征，因此对新位置做归一化不需要重新计算旧位置的统计量。并行实现包括行内归约，以及随后独立的逐元素变换。
+
+逐位置前馈网络（position-wise feed-forward network，FFN）采用两次线性变换，中间加入非线性：
+\begin{equation}
+  \operatorname{FFN}(H)=\phi(HW_1+b_1)W_2+b_2,
+  \quad
+  W_1\in\mathbb{R}^{D\times D_{\mathrm{ff}}},\quad
+  W_2\in\mathbb{R}^{D_{\mathrm{ff}}\times D}.
+  \label{l12:eq:ffn}
+\end{equation}
+其中偏置分别按行广播。所有位置共享相同的 $W_1,W_2$，但各行的计算彼此独立。第一层把特征扩展到中间宽度，非线性改变特征组合的表达能力，第二层恢复到 $D$ 维。若去掉非线性，两次线性变换可以合并为一次，无法表达这种非线性映射。跨位置的信息已经由注意力汇入当前行，前馈网络进一步变换该行的特征。
+
+GPT-2 取 $D_{\mathrm{ff}}=4D$，并采用高斯误差线性单元（Gaussian Error Linear Unit，GELU）。其定义为 $\operatorname{GELU}(u)=u\Phi(u)$，其中 $\Phi$ 是标准正态分布的累积分布函数；常用的计算近似为
+\begin{equation}
+  \operatorname{GELU}(u)\approx\frac{u}{2}
+  \left[1+\tanh\!\left(\sqrt{\frac{2}{\pi}}
+  (u+0.044715u^3)\right)\right].
+  \label{l12:eq:gelu}
+\end{equation}
+复现一个既定模型时，需要匹配其使用的激活函数及近似表达。完成全部 $L$ 层后，再对 $X^{(L)}$ 做最终层归一化，得到用于词表投影的 $H$。GPT-2 的词表投影与输入嵌入共享权重，即 $W_U=E^{\mathsf T}$，且 $b_U=0$，从而将宽度 $D$ 的表示映射到 $V_{\mathrm{voc}}$ 个分数。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  font=\small,>=Latex,
+  box/.style={draw=UIUCBlue,line width=0.7pt,rounded corners=1pt,minimum width=4.5cm,minimum height=0.65cm,align=center},
+  sum/.style={draw=black,circle,minimum size=0.53cm,inner sep=0pt},
+  flow/.style={->,line width=0.75pt,draw=UIUCBlue},
+  residual/.style={->,line width=0.85pt,draw=UIUCOrange}
+]
+\node (x) at (0,0) {$X^{(\ell)}$};
+\node[box] (n1) at (0,-0.9) {层归一化};
+\node[box] (a) at (0,-1.95) {因果多头注意力};
+\node[sum] (s1) at (0,-3.0) {$+$};
+\node[box] (n2) at (0,-4.05) {层归一化};
+\node[box] (f) at (0,-5.1) {逐位置前馈网络};
+\node[sum] (s2) at (0,-6.15) {$+$};
+\node (y) at (0,-7.0) {$X^{(\ell+1)}$};
+\draw[flow] (x)--(n1);
+\draw[flow] (n1)--(a);
+\draw[flow] (a)--(s1);
+\draw[flow] (s1)--node[left,xshift=-0.15cm] {$U^{(\ell)}$}(n2);
+\draw[flow] (n2)--(f);
+\draw[flow] (f)--(s2);
+\draw[flow] (s2)--(y);
+\draw[residual] (x.east)--(3.1,0)|-(s1.east);
+\draw[residual] (0,-3.5)--(3.1,-3.5)|-(s2.east);
+\node[anchor=west,align=left] at (3.4,-1.5) {保留子层输入};
+\node[anchor=west,align=left] at (3.4,-4.65) {保留中间表示};
+\end{tikzpicture}
+\caption{前置层归一化结构。每个子层先对输入归一化，再计算更新量，并通过残差路径加回未归一化的子层输入。所有残差相加均保持 $N\times D$ 的形状。}
+\label{l12:fig:preln}
+\end{figure}
+
+\subsection{三个词元的注意力算例}
+\label{l12:subsec:example}
+
+考虑单头、三个位置、头维度 $d=2$。为直接检查注意力内部的计算，给定已经投影得到的三个矩阵：
+\begin{equation}
+ Q=\begin{bmatrix}\sqrt2&0\\0&\sqrt2\\\sqrt2&\sqrt2\end{bmatrix},\qquad
+ K=\begin{bmatrix}1&0\\0&1\\1&1\end{bmatrix},\qquad
+ V=\begin{bmatrix}1&0\\0&2\\3&1\end{bmatrix}.
+ \label{l12:eq:example-qkv}
+\end{equation}
+先计算每一行查询与各行键的内积，并除以 $\sqrt2$，得到
+\begin{equation}
+ S=\frac{QK^{\mathsf T}}{\sqrt2}
+ =\begin{bmatrix}1&0&1\\0&1&1\\1&1&2\end{bmatrix},\qquad
+ S+M=\begin{bmatrix}1&-\infty&-\infty\\0&1&-\infty\\1&1&2\end{bmatrix}.
+ \label{l12:eq:example-score}
+\end{equation}
+第一行只有位置 $0$ 可见，因此权重恰为 $(1,0,0)$。第二行有效分数为 $(0,1)$，相应权重为 $(1/(1+e),e/(1+e),0)$。第三行分数为 $(1,1,2)$，约去共同因子 $e$ 后，权重为 $(1/(2+e),1/(2+e),e/(2+e))$。因此
+\begin{equation}
+ P\approx
+ \begin{bmatrix}
+ 1&0&0\\
+ 0.268941&0.731059&0\\
+ 0.211942&0.211942&0.576117
+ \end{bmatrix},\qquad
+ O=PV\approx
+ \begin{bmatrix}
+ 1&0\\
+ 0.268941&1.462117\\
+ 1.940292&1
+ \end{bmatrix}.
+ \label{l12:eq:example-output}
+\end{equation}
+例如第三个输出是 $0.211942(1,0)+0.211942(0,2)+0.576117(3,1)$。其第二个分量严格等于 $(2+e)/(2+e)=1$，第一分量严格等于 $(1+3e)/(2+e)$。每行权重和为一，上三角为零，输出形状仍为 $3\times2$。这些关系可以同时检查索引方向、掩码边界、归一化范围和值聚合是否正确。

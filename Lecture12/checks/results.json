@@ -1,0 +1,62 @@
+{
+  "softmax_cases": [
+    {
+      "N": 1,
+      "max_abs_error": 0.0
+    },
+    {
+      "N": 2,
+      "max_abs_error": 5.6185944785625e-11
+    },
+    {
+      "N": 255,
+      "max_abs_error": 1.1888875517396258e-07
+    },
+    {
+      "N": 256,
+      "max_abs_error": 1.6989329687522314e-07
+    },
+    {
+      "N": 257,
+      "max_abs_error": 1.2855258813004866e-07
+    },
+    {
+      "N": 513,
+      "max_abs_error": 1.5761448834972214e-07
+    }
+  ],
+  "attention_example": [
+    [
+      1.0,
+      0.0
+    ],
+    [
+      0.2689414213699951,
+      1.4621171572600098
+    ],
+    [
+      1.940292211914573,
+      1.0
+    ]
+  ],
+  "cached_attention_max_error": 1.3253287356462806e-15,
+  "online_softmax_max_error": 5.551115123125783e-17,
+  "projection_parameters": 57982058496,
+  "projection_GiB": 108,
+  "projection_GFLOP": 115.964116992,
+  "MHA_cache_GiB": 2,
+  "GQA_cache_GiB": 0.5,
+  "variable_lengths": [
+    5,
+    11,
+    17
+  ],
+  "variable_cache_bytes": 17301504,
+  "batch_AI": {
+    "1": 0.9987807851743478,
+    "512": 315.0769230769231
+  },
+  "cuda_compile": "not_run",
+  "gpu_execution": "not_run",
+  "gpu_timing": "not_run"
+}

@@ -1,0 +1,85 @@
+\Needspace{20\baselineskip}
+\section{矩阵乘法基准与可信测量}
+\label{l14:sec:measurement}
+
+\subsection{统一问题规模与运算量口径}
+
+通用矩阵乘法（general matrix multiplication，GEMM）提供了一个便于比较不同数据复用方式的基准。设 $A\in\mathbb{R}^{M\times K}$、$B\in\mathbb{R}^{K\times N}$，计算 $C=AB\in\mathbb{R}^{M\times N}$。采用从 $0$ 开始的索引，则 $C_{ij}=\sum_{k=0}^{K-1}A_{ik}B_{kj}$。以下实现均使用\term{行主序}{row-major order}：$A_{ik}$ 的元素偏移为 $iK+k$，$B_{kj}$ 为 $kN+j$，$C_{ij}$ 为 $iN+j$。代码假定 $M,N,K$ 为正整数，设备数组容量与矩阵尺寸匹配。
+
+每个输出需要 $K$ 次乘法和累加。性能统计通常把一次\term{融合乘加}{fused multiply-add，FMA}计为两次浮点运算，即使它在机器层只对应一条指令。因此，统一采用总运算量 $F=2MNK$。这里的浮点运算量（FLOP）与每秒浮点运算数（FLOP/s）含义不同：前者是工作量，后者是吞吐率。若耗时为 $t_{\mathrm{ms}}$ 毫秒，则
+\begin{equation}
+  P_{\mathrm{G}}=\frac{2MNK}{10^6t_{\mathrm{ms}}}
+  \quad\text{GFLOP/s},\qquad
+  S=\frac{t_{\mathrm{base}}}{t},\qquad
+  \eta=\frac{P}{P_{\mathrm{peak}}}.
+  \label{l14:eq:performance}
+\end{equation}
+其中 $S$ 是相对基准的加速比，$\eta$ 是采用指定理论峰值计算的效率。峰值应与浮点精度、执行单元类型和时钟条件一致；用不同精度或张量核心的峰值评价普通单精度内核，会改变效率分母的含义。$2MNK$ 统计有效工作量；分块边界处执行的填零乘加也可能计入硬件计数，因此报告按实际指令统计的吞吐率与这里的有效吞吐率可能略有差异。
+
+\subsection{简单内核与共享内存分块}
+
+简单内核让每个线程负责一个输出。为了把输出空间排成一维网格，可令线程索引 $q$ 对应 $i=\lfloor q/N\rfloor$、$j=q\bmod N$。这使相邻线程优先处理同一行的相邻列。下面的内核用 \code{size_t} 计算线性地址，并对输出边界进行检查。
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={每线程计算一个输出的简单矩阵乘法},label={l14:lst:simple}]
+__global__ void gemm_simple(const float* A, const float* B,
+                            float* C, int M, int N, int K) {
+  size_t q = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (q >= size_t(M) * N) return;
+  int row = int(q / N);
+  int col = int(q % N);
+  float sum = 0.0f;
+  for (int k = 0; k < K; ++k) {
+    sum += A[size_t(row) * K + k] * B[size_t(k) * N + col];
+  }
+  C[q] = sum;
+}
+\end{lstlisting}
+\end{minipage}
+
+从源代码看，每个输出执行 $2K$ 次全局加载。同一行的多个输出都要使用同一组 $A$ 元素，同一列的多个输出也会重复使用 $B$ 的元素。这些重复访问可能命中缓存，因此源代码加载次数并不直接等于设备内存事务次数。不过，程序仍然需要发射相关加载指令并处理地址与依赖，这些开销即使在缓存命中时也存在。
+
+共享内存分块把 $T\times T$ 个输出交给一个包含 $T\times T$ 个线程的线程块。每次沿 $K$ 方向处理长度为 $T$ 的区间时，线程块先协作读入 $A$ 的一个 $T\times T$ 子块和 $B$ 的一个 $T\times T$ 子块，再让各线程从共享内存取数并更新自己的累加器。一个加载进来的 $A$ 元素供同一输出行中的 $T$ 个线程复用，一个 $B$ 元素则供同一输出列中的 $T$ 个线程复用。
+
+对一个不含边界的完整分块阶段，简单实现需要约 $2T^3$ 次全局标量加载，共享分块只需 $2T^2$ 次；两者都完成 $2T^3$ 次浮点运算。因此，全局加载的逻辑需求约缩小到原来的 $1/T$。实现还需要共享内存加载和同步，其实际加速比应通过测量确定。
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[caption={带边界处理的共享内存分块内核},label={l14:lst:shared}]
+template<int T>
+__global__ void gemm_shared(const float* A, const float* B,
+                            float* C, int M, int N, int K) {
+  __shared__ float As[T][T];
+  __shared__ float Bs[T][T];
+  int tx = threadIdx.x, ty = threadIdx.y;
+  int row = blockIdx.y * T + ty;
+  int col = blockIdx.x * T + tx;
+  float sum = 0.0f;
+  for (int k0 = 0; k0 < K; k0 += T) {
+    As[ty][tx] = (row < M && k0 + tx < K)
+        ? A[size_t(row) * K + k0 + tx] : 0.0f;
+    Bs[ty][tx] = (k0 + ty < K && col < N)
+        ? B[size_t(k0 + ty) * N + col] : 0.0f;
+    __syncthreads();
+    for (int k = 0; k < T; ++k) {
+      sum += As[ty][k] * Bs[k][tx];
+    }
+    __syncthreads();
+  }
+  if (row < M && col < N) C[size_t(row) * N + col] = sum;
+}
+\end{lstlisting}
+\end{minipage}
+
+代码\ref{l14:lst:shared}要求以 \code{dim3(T,T)} 作为线程块维度，以 \code{dim3((N+T-1)/T,(M+T-1)/T)} 作为网格维度。合法的 $T$ 还须满足设备对线程块线程数和共享内存的限制。第一个同步保证整个子块已经加载完成；第二个同步保证所有线程读取完当前子块后，才会有人覆盖下一阶段的数据。边界线程仍参与加载、补零与两个同步，不能在进入循环之前因输出越界而提前返回。
+
+这一实现也给出了两种不同的连续性。全局加载时，相邻 \code{threadIdx.x} 访问 $A$ 或 $B$ 的相邻列；累加时，固定线程沿 $k$ 依次读取 \code{As[ty][k]}，这些地址连续，而 \code{Bs[k][tx]} 的相邻读取之间相隔一整行。前一种连续性关系到线程束的全局访存合并，后一种连续性决定单个线程是否方便把多次共享读取合成宽指令。
+
+\subsection{寄存器与共享内存联合分块}
+
+\term{线程粗化}{thread coarsening}让一个线程负责多个输出。设一个线程计算某行上的 $r$ 个相邻输出，则它需要 $r$ 个累加器 $c_0,\ldots,c_{r-1}$。对某个归约索引 $k$，只需把 $a=A_{ik}$ 加载到一个寄存器中，就能用它更新 $r$ 个累加器：$c_j\leftarrow c_j+aB_{k,j_0+j}$。$A$ 的这次加载于是在线程内部得到复用。
+
+联合分块可以让一个线程块的 $b_m$ 个线程分别处理 $b_m$ 行，每线程负责 $b_n$ 列输出，形成 $b_m\times b_n$ 的输出子块。各线程使用的 $A$ 行不同，适合把当前 $A$ 数据保留在线程自己的寄存器中；所有线程会重复使用同一组 $B$ 数据，适合将 $B$ 子块放入共享内存。这将复用分别安排在线程内部和线程块内部。
+
+若每个归约阶段的长度为 $b_k$，理想情况下需要加载 $b_mb_k$ 个 $A$ 元素和 $b_kb_n$ 个 $B$ 元素，完成 $2b_mb_nb_k$ 次浮点运算。线程同时持有多个输出累加器，还能提供多条相对独立的乘加依赖链。代价是寄存器需求增大、线程块配置改变，边界处理和数据加载的分工也更复杂。合理的分块形状需要兼顾复用、访存布局与资源限制。
+
+高性能线性代数库（cuBLAS）提供 GEMM 的优化实现，可以作为参考结果和性能对照。比较时应统一矩阵尺寸、行列主序的解释、输入与累加精度，以及是否允许采用张量核心。以下实验表采用普通单精度计算口径，不将张量核心峰值混入效率分母。库函数的函数名本身不足以确定全部执行路径，数学模式和实际指令也属于实验配置。

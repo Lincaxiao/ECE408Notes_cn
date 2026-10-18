@@ -1,0 +1,145 @@
+\section{线程块私有化与共享内存}
+\label{l13:sec:privatization}
+
+\subsection{局部统计与全局结果的等价性}
+
+私有化（privatization）为不同参与者维护独立的输出副本，先在副本中积累局部结果，再把这些结果合并到公共输出。在直方图中，适合让每个线程块维护一份共享内存直方图。这里的“私有”是相对于其他线程块而言；同一块内的线程仍共同访问该副本。
+
+令第 $r$ 个线程块处理的输入索引集合为 $\mathcal I_r$，其中 $r=0,\ldots,G-1$。这些集合互不相交，且并集包含全部输入。该块的局部直方图记为 $H_j^{(r)}$，则
+\begin{equation}
+H_j^{(r)}=\sum_{i\in\mathcal I_r}\mathbf{1}\{b(x_i)=j\},
+\qquad
+H_j=\sum_{r=0}^{G-1}H_j^{(r)}.
+\label{l13:eq:private-sum}
+\end{equation}
+第二个等式来自对输入求和的重新分组：每个输入只属于一个集合，所以它对相应桶的那一次贡献只出现一次。局部累加改变了加法的分组方式，不同块完成和合并的顺序也可能不同。整数计数在不溢出的条件下满足结合律和交换律，因此这两种变化保持结果不变。
+
+更一般地，如果要任意重新分组并调整局部结果的提交顺序，所用合并运算需要满足相应的结合与交换性质。若某个任务要求保留更新的先后顺序，就需要另外保存和执行该顺序。对当前的非负整数计数，逐块合并可以直接使用原子加法。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\small,>=Stealth,
+  part/.style={draw=UIUCBlue,minimum width=3.7cm,minimum height=.85cm,align=center},
+  local/.style={draw=UIUCBlue,fill=UIUCBlue!7,minimum width=3.7cm,minimum height=.9cm,align=center},
+  final/.style={draw=UIUCOrange,fill=UIUCOrange!7,minimum width=5.8cm,minimum height=.95cm,align=center}]
+\node[part] (i0) at (0,0) {输入集合 $\mathcal I_0$};
+\node[part] (i1) at (4.4,0) {输入集合 $\mathcal I_1$};
+\node[part] (i2) at (8.8,0) {输入集合 $\mathcal I_2$};
+\node[local] (h0) at (0,-1.7) {块 $0$ 的局部直方图};
+\node[local] (h1) at (4.4,-1.7) {块 $1$ 的局部直方图};
+\node[local] (h2) at (8.8,-1.7) {块 $2$ 的局部直方图};
+\node[final] (h) at (4.4,-3.6) {公共直方图 $H_j=\sum_r H_j^{(r)}$};
+\draw[->,semithick] (i0)--(h0);
+\draw[->,semithick] (i1)--node[right]{块内原子加}(h1);
+\draw[->,semithick] (i2)--(h2);
+\draw[->,semithick] (h0.south)--(h.north west);
+\draw[->,semithick] (h1.south)--node[right]{全局原子加}(h.north);
+\draw[->,semithick] (h2.south)--(h.north east);
+\end{tikzpicture}
+\caption{三个线程块先独立形成局部计数，再逐桶合并到公共结果。}
+\label{l13:fig:private}
+\end{figure}
+
+在网格跨步划分下，$\mathcal I_r$ 通常由多个起点相隔 $GT$ 的连续小段组成，不必是输入中的一个连续大区间。式\eqref{l13:eq:private-sum}只要求集合构成无重复、无遗漏的划分；存储地址上是否连续不影响求和恒等式。
+
+\subsection{初始化、局部统计与全局合并}
+
+每个线程块执行三个阶段。首先将自己的共享数组清零；然后处理分配到的输入，对该数组中的目标桶做原子加；最后将每个非零局部桶的计数原子加入全局输出。代码\ref{l13:lst:private-hist}给出完整实现，输入仍为 $256$ 种无符号字节值。
+
+\noindent\begin{minipage}{\textwidth}
+\begin{lstlisting}[caption={共享内存私有化的完整直方图核函数},label={l13:lst:private-hist}]
+__global__ void histogram_private(
+    const unsigned char* input, std::size_t n,
+    unsigned int* hist)
+{
+    __shared__ unsigned int shared_hist[256];
+
+    for (unsigned int b = threadIdx.x; b < 256;
+         b += blockDim.x) {
+        shared_hist[b] = 0u;
+    }
+    __syncthreads();
+
+    std::size_t i = std::size_t(blockIdx.x) * blockDim.x
+                  + threadIdx.x;
+    std::size_t stride = std::size_t(gridDim.x) * blockDim.x;
+    for (; i < n; i += stride) {
+        atomicAdd(&shared_hist[input[i]], 1u);
+    }
+    __syncthreads();
+
+    for (unsigned int b = threadIdx.x; b < 256;
+         b += blockDim.x) {
+        unsigned int count = shared_hist[b];
+        if (count != 0u) {
+            atomicAdd(&hist[b], count);
+        }
+    }
+}
+\end{lstlisting}
+\end{minipage}
+
+清零阶段按块内线程数跨步分配桶。任一桶 $b$ 都可唯一写成 $b=qT+t$，其中 $0\le t<T$，因此恰由线程 $t$ 清零。若每块只有 $128$ 个线程，线程 $t$ 依次清零桶 $t$ 和 $t+128$；若每块有 $512$ 个线程，只有前 $256$ 个线程需要写零。这个循环支持任意合法的一维线程块大小。
+
+第一处 \mbox{\code{__syncthreads()}} 等待块内线程完成全部清零，并使随后阶段能看到这些写入。没有这处同步，快线程可能已经向某个桶加一，负责该桶初始化的慢线程随后再写入零，从而覆盖已有贡献。每个桶只由一个线程清零，也仍然需要阶段间同步，因为清零者与后续更新者可能不同。
+
+局部统计阶段使用共享内存原子加。不同线程块的副本已经分开，因此块 $0$ 对自己桶 $7$ 的更新不会与块 $1$ 的局部桶 $7$ 争用同一地址；但是，同一块内多个线程仍可能同时更新本块的桶 $7$。共享内存的可见性和地址独立性并不替代块内冲突更新所需的原子性。
+
+第二处 \mbox{\code{__syncthreads()}} 保证本块所有局部更新完成，随后才读取桶值并提交公共计数。若提前合并，一个线程读到的可能只是局部统计的中间值，后续增量就不会被提交到全局。该屏障位于整个输入循环之后，循环次数不同的线程最终都会到达同一个阶段边界。
+
+\subsection{合并阶段的并发与同步边界}
+
+第二次同步后，块内不再修改局部直方图。各桶由一个线程读取并负责提交，因此读取局部计数不需要原子操作。不同块却可能同时向同一个全局桶提交结果，所以全局合并仍使用 \mbox{\code{atomicAdd}}。把局部原子加换成普通加法会在块内丢失更新，把全局原子加换成普通加法则会在块之间丢失更新。
+
+零计数没有贡献，代码通过 \mbox{\code{count != 0u}} 跳过这类全局更新。提交之后不再复用局部数组，也没有下一阶段需要块内共同读取提交结果，因此无需在核函数末尾再加一次块屏障。不同线程块可以各自完成、各自合并；所有块的更新都结束时，公共直方图才是完整结果。
+
+对这一核函数，不能因为某个线程的初始输入索引超过 $N-1$ 就在开头提前返回。即使它没有输入需要统计，也可能承担某些桶的清零或归并工作，并且需要参与块内的阶段同步。正确写法是让边界条件只控制输入循环的工作量，全部线程继续经过两处屏障。
+
+主机端仍需要在核函数开始前清零全局输出。代码\ref{l13:lst:launch}的清零和完成处理原则可以直接沿用，只需把启动目标改为 \mbox{\code{histogram_private}}。不能由某个普通线程块在同一个核函数开始处负责清零公共数组、其他块立即累加，因为普通的块内屏障无法保证其他块等到全局清零完成。
+
+算法的正确性由三部分组成：网格跨步划分使每个输入只处理一次；两次屏障和共享原子加使各块准确得到式\eqref{l13:eq:private-sum}中的局部计数；全局原子加将全部局部计数完整累加。初始化、阶段边界和原子更新分别保证不同环节。
+
+\subsection{原子操作数量与资源开销}
+
+令 $U_r$ 表示线程块 $r$ 的非零桶数。直接算法为每个输入执行一次全局原子加，因此全局原子更新总数为 $N$。私有化算法则执行 $N$ 次共享内存原子加，并在合并阶段执行
+\begin{equation}
+A_{\mathrm{global}}=\sum_{r=0}^{G-1}U_r
+\le\min\{N,GB\}
+\label{l13:eq:merge-count}
+\end{equation}
+次全局原子加。每块最多有 $B$ 个非零桶，所以有上界 $GB$；每个非零桶至少需要一个输入贡献，而不同块的输入互不重叠，所以同时有上界 $N$。代码若不跳过零桶，合并阶段的全局原子加次数就固定为 $GB$。
+
+\begin{table}[htbp]
+\centering
+\caption{基本算法与块级私有化的工作量比较}
+\label{l13:tab:work}
+\small
+\begin{tabularx}{\textwidth}{Ycc}
+\toprule
+操作或资源 & 基本全局算法 & 共享内存私有化 \\
+\midrule
+输入元素读取 & $N$ & $N$ \\
+共享内存原子加 & $0$ & $N$ \\
+全局原子加 & $N$ & $\sum_rU_r\le\min\{N,GB\}$ \\
+私有桶清零 & $0$ & $GB$ \\
+每块屏障次数 & $0$ & $2$ \\
+每块共享计数器容量 & $0$ & $B$ 个计数器 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+当各块几乎覆盖全部桶时，可以取 $U_r\approx B$，从而全局原子操作次数由 $N$ 降到约 $GB$。令每块平均处理的输入数为 $n_{\mathrm{block}}=N/G$，则次数缩减倍数约为 $N/(GB)=n_{\mathrm{block}}/B$。每块处理的数据远多于桶数时，可以把很多局部增量聚合成少量公共更新。
+
+若各块只处理很少的输入，局部非零桶数可能接近局部输入数，此时 $\sum_rU_r$ 接近 $N$，而清零、共享原子加和屏障已经引入额外开销。若输入集中于一个桶，只要每个块都有有效输入，就有 $U_r=1$，全局原子更新数量从 $N$ 降为 $G$；同时各块仍各自承担局部同桶更新的串行链。
+
+表\ref{l13:tab:work}统计的是操作数量，不能把不同位置的原子加按相同单价换算成运行时间。是否获得加速还取决于共享内存服务能力、L2 中公共计数器的处理能力、输入分布和设备并行度。次数分析提供的是优化原因与规模关系。
+
+使用 $32$ 位无符号计数器时，每个局部直方图占用 $4B$ 字节；$B=256$ 时为 $1024$ 字节，即 $1\,\mathrm{KiB}$。若某流式多处理器（streaming multiprocessor，SM）可供驻留线程块使用的共享内存为 $S_{\mathrm{SM}}$，仅考虑这一资源时，驻留块数至多为 $\lfloor S_{\mathrm{SM}}/(4B)\rfloor$。实际还受每块和每个 SM 的线程数、寄存器及块数限制，因此局部数组增大可能降低驻留并行度。
+
+\subsection{桶数超过共享内存容量时}
+
+共享内存私有化要求局部数组能容纳在设备允许的每块共享内存中，并保留足够的并行执行资源。桶数很大时，可以只为一部分桶建立局部数组，按桶区间分批统计。每一批都扫描输入，仅对当前桶区间内的元素更新。这样减少了单批的局部容量，但会重复读取输入；若共有 $K$ 批且每批都完整扫描，输入读取量变为 $KN$。
+
+另一个选择是把各块的局部直方图放在全局内存，使用不同的行保存不同块的结果。这样仍把原来所有块对同一地址的竞争分散到不同地址，但局部更新不再享受共享内存的低延迟。第一阶段结束后，第二个核函数按桶求各行之和；若每个最终桶由唯一线程或唯一协作组负责输出，最终写入可以不使用全局原子加。其代价是约 $GB$ 个额外计数器、局部结果的全局读写和第二次核函数启动。
+
+这两种方法分别用更多输入扫描或更多全局存储换取较小的共享内存需求。选择时应结合桶数、输入长度和冲突程度；它们保持的数学关系仍然是式\eqref{l13:eq:private-sum}。
